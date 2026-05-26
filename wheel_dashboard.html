@@ -759,14 +759,30 @@ async function loadSymbol(symbol, dateTs) {
       state.symbol = symbol;
       state.underlying = result.quote;
       state.expirations = result.expirationDates;
-      state.selectedExpiration = dateTs || result.expirationDates[0];
+      
+      // Pick first expiration that actually has contracts (skip empty LEAPs/dead expirations)
+      let firstWithData = null;
+      for (const ts of result.expirationDates) {
+        const slice = result.optionsByExpiration[String(ts)] || result.optionsByExpiration[ts];
+        if (slice && ((slice.calls && slice.calls.length) || (slice.puts && slice.puts.length))) {
+          firstWithData = ts;
+          break;
+        }
+      }
+      state.selectedExpiration = dateTs || firstWithData || result.expirationDates[0];
     } else if (dateTs) {
       state.selectedExpiration = dateTs;
     }
 
     const exp = state.selectedExpiration;
-    const slice = state.fullData.optionsByExpiration[exp] || { calls: [], puts: [] };
+    // Backend returns optionsByExpiration with STRING keys; ensure we look up as string
+    const slice = state.fullData.optionsByExpiration[String(exp)] 
+               || state.fullData.optionsByExpiration[exp] 
+               || { calls: [], puts: [] };
     const spot = state.underlying.regularMarketPrice;
+
+    console.log('[DEBUG] Selected exp:', exp, 'Available keys:', Object.keys(state.fullData.optionsByExpiration).slice(0,3), '...');
+    console.log('[DEBUG] Slice calls/puts:', slice.calls?.length, '/', slice.puts?.length);
 
     enrichDelta(slice.calls, spot, true);
     enrichDelta(slice.puts, spot, false);
