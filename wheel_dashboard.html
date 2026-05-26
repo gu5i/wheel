@@ -889,7 +889,7 @@ function renderExpirations() {
     chip.className = 'exp-chip';
     if (ts === state.selectedExpiration) chip.classList.add('active');
     const d = new Date(ts * 1000);
-    chip.innerHTML = `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}<span class="dte">${dte}d</span>`;
+    chip.innerHTML = `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}<span class="dte">${dte}d</span>`;
     chip.addEventListener('click', () => loadSymbol(state.symbol, ts));
     wrap.appendChild(chip);
   });
@@ -993,6 +993,7 @@ function scoreContract(c, spot, side) {
     totalReturn,
     yieldPerDay,
     distPct,
+    expiration: c.expiration,
     itm: c.inTheMoney,
     side,
     hasPrice,
@@ -1123,7 +1124,7 @@ function renderTable(side, rows) {
     const noQuoteCls = noQuote ? ' no-quote' : '';
     const itmBadge = r.itm ? '<span class="badge itm">ITM</span>' : '<span class="badge otm">OTM</span>';
     const noQuoteBadge = noQuote ? ' <span class="badge nq">NO BID</span>' : '';
-    const expDate = new Date(r.dte * 86400 * 1000 + Date.now()).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    const expDate = new Date(r.expiration * 1000).toLocaleDateString('en-US',{month:'short',day:'numeric', timeZone: 'UTC'});
     html += `<tr class="${itmCls}${noQuoteCls}">
       <td class="ticker-cell">
         ${itmBadge}${noQuoteBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
