@@ -11,7 +11,7 @@ Both can be overridden per-request via query params:
   /chain/AAPL/all?max_days=120&strike_pct=30
 """
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import yfinance as yf
@@ -109,7 +109,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "time": datetime.utcnow().isoformat()}
+    return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/quote/{symbol}")
@@ -145,14 +145,14 @@ def chain_all(
         if not expirations:
             raise HTTPException(404, f"No options for {symbol}")
 
-        cutoff_ts = datetime.utcnow().timestamp() + (max_days * 86400)
+        cutoff_ts = datetime.now(timezone.utc).timestamp() + (max_days * 86400)
 
         options_by_exp = {}
         exp_unix = []
         warnings = []
         for exp_str in expirations:
             try:
-                ts = int(datetime.strptime(exp_str, "%Y-%m-%d").timestamp())
+                ts = int(datetime.strptime(exp_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
                 if ts > cutoff_ts:
                     continue  # skip expirations beyond max_days
                 chain = t.option_chain(exp_str)
@@ -202,7 +202,7 @@ def chain(
         if not expirations:
             raise HTTPException(404, f"No options for {symbol}")
 
-        exp_unix = [int(datetime.strptime(e, "%Y-%m-%d").timestamp()) for e in expirations]
+        exp_unix = [int(datetime.strptime(e, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()) for e in expirations]
 
         if expiration is None:
             exp_str = expirations[0]
