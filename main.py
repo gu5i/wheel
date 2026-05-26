@@ -1,32 +1,67 @@
+"""
+Wheel Options Backend
+=====================
+FastAPI service serving option chain data for the wheel dashboard.
+
+Defaults are tuned for the wheel strategy:
+  - Only expirations within the next MAX_DAYS days (default 90)
+  - Only strikes within ±STRIKE_PCT% of spot (default 50)
+
+Both can be overridden per-request via query params:
+  /chain/AAPL/all?max_days=120&strike_pct=30
+"""
 import os
 from datetime import datetime
 from typing import Optional
+
 import yfinance as yf
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Wheel Options API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
+app = FastAPI(title="Wheel Options API", version="1.1.0")
 
-def _quote_dict(info, symbol):
+allowed = os.getenv("ALLOWED_ORIGIN", "*")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[allowed] if allowed != "*" else ["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
+# Defaults — change these here if you want different system-wide defaults
+DEFAULT_MAX_DAYS = 90
+DEFAULT_STRIKE_PCT = 50
+
+
+def _quote_dict(info: dict, symbol: str) -> dict:
     price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose") or 0
     return {
         "symbol": symbol,
         "regularMarketPrice": price,
         "regularMarketChange": info.get("regularMarketChange", 0) or 0,
-        "regularMarketChangePercent": info.get("regularMarketChangePercent", 0) or 0,
+        "regularMarketChangePercent": (info.get("regularMarketChangePercent", 0) or 0) * (100 if abs(info.get("regularMarketChangePercent", 0) or 0) < 1 else 1),
         "bid": info.get("bid", 0) or 0,
         "ask": info.get("ask", 0) or 0,
         "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow", 0) or 0,
         "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh", 0) or 0,
         "regularMarketVolume": info.get("regularMarketVolume", 0) or info.get("volume", 0) or 0,
+        "shortName": info.get("shortName", symbol),
     }
 
-def _option_rows(df, expiration_ts):
+
+def _option_rows(df, expiration_ts: int, spot: float, strike_pct: float) -> list[dict]:
+    """Convert a yfinance options DataFrame to dicts, filtered to strikes within ±strike_pct% of spot."""
     rows = []
-    if df is None or df.empty:
+    if df is None or df.empty or spot <= 0:
         return rows
+
+    low_strike = spot * (1 - strike_pct / 100)
+    high_strike = spot * (1 + strike_pct / 100)
+
     for _, r in df.iterrows():
+        strike = float(r.get("strike", 0) or 0)
+        if strike <= 0 or strike < low_strike or strike > high_strike:
+            continue
         bid = float(r.get("bid", 0) or 0)
         ask = float(r.get("ask", 0) or 0)
         last = float(r.get("lastPrice", 0) or 0)
@@ -34,8 +69,10 @@ def _option_rows(df, expiration_ts):
             continue
         rows.append({
             "contractSymbol": str(r.get("contractSymbol", "")),
-            "strike": float(r.get("strike", 0) or 0),
-            "bid": bid, "ask": ask, "lastPrice": last,
+            "strike": strike,
+            "bid": bid,
+            "ask": ask,
+            "lastPrice": last,
             "volume": int(r.get("volume", 0) or 0),
             "openInterest": int(r.get("openInterest", 0) or 0),
             "impliedVolatility": float(r.get("impliedVolatility", 0) or 0),
@@ -44,44 +81,132 @@ def _option_rows(df, expiration_ts):
         })
     return rows
 
+
 @app.get("/")
 def root():
-    return {"service": "Wheel Options API", "status": "ok"}
+    return {
+        "service": "Wheel Options API",
+        "version": "1.1.0",
+        "defaults": {"max_days": DEFAULT_MAX_DAYS, "strike_pct": DEFAULT_STRIKE_PCT},
+        "endpoints": ["/health", "/quote/{symbol}", "/chain/{symbol}", "/chain/{symbol}/all"],
+    }
+
 
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
-@app.get("/chain/{symbol}/all")
-def chain_all(symbol: str):
+
+@app.get("/quote/{symbol}")
+def quote(symbol: str):
     symbol = symbol.upper().strip()
     try:
         t = yf.Ticker(symbol)
         info = t.info
-        quote = _quote_dict(info, symbol)
-        expirations = list(t.options or [])
-        if not expirations:
-            raise HTTPException(404, f"No options for {symbol}")
-        options_by_exp = {}
-        exp_unix = []
-        for exp_str in expirations:
-            try:
-                ts = int(datetime.strptime(exp_str, "%Y-%m-%d").timestamp())
-                exp_unix.append(ts)
-                chain = t.option_chain(exp_str)
-                options_by_exp[str(ts)] = {
-                    "calls": _option_rows(chain.calls, ts),
-                    "puts": _option_rows(chain.puts, ts),
-                }
-            except Exception as e:
-                print(f"skip {exp_str}: {e}")
-                continue
-        return {"quote": quote, "expirationDates": sorted(exp_unix), "optionsByExpiration": options_by_exp}
+        if not info or (not info.get("regularMarketPrice") and not info.get("previousClose")):
+            raise HTTPException(404, f"No quote data for {symbol}")
+        return _quote_dict(info, symbol)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(500, f"yfinance error: {e}")
 
+
+@app.get("/chain/{symbol}/all")
+def chain_all(
+    symbol: str,
+    max_days: int = Query(DEFAULT_MAX_DAYS, ge=1, le=730, description="Only include expirations within this many days"),
+    strike_pct: float = Query(DEFAULT_STRIKE_PCT, ge=1, le=200, description="Only include strikes within ±this % of spot"),
+):
+    """Return quote + every expiration within max_days, each filtered to strikes within ±strike_pct% of spot."""
+    symbol = symbol.upper().strip()
+    try:
+        t = yf.Ticker(symbol)
+        info = t.info
+        quote = _quote_dict(info, symbol)
+        spot = quote["regularMarketPrice"]
+
+        expirations = list(t.options or [])
+        if not expirations:
+            raise HTTPException(404, f"No options for {symbol}")
+
+        cutoff_ts = datetime.utcnow().timestamp() + (max_days * 86400)
+
+        options_by_exp = {}
+        exp_unix = []
+        for exp_str in expirations:
+            try:
+                ts = int(datetime.strptime(exp_str, "%Y-%m-%d").timestamp())
+                if ts > cutoff_ts:
+                    continue  # skip expirations beyond max_days
+                chain = t.option_chain(exp_str)
+                calls = _option_rows(chain.calls, ts, spot, strike_pct)
+                puts = _option_rows(chain.puts, ts, spot, strike_pct)
+                # only include the expiration if at least one side has data after filtering
+                if not calls and not puts:
+                    continue
+                exp_unix.append(ts)
+                options_by_exp[str(ts)] = {"calls": calls, "puts": puts}
+            except Exception as e:
+                print(f"[warn] {symbol} exp {exp_str}: {e}")
+                continue
+
+        return {
+            "quote": quote,
+            "expirationDates": sorted(exp_unix),
+            "optionsByExpiration": options_by_exp,
+            "filters": {"max_days": max_days, "strike_pct": strike_pct},
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"yfinance error: {e}")
+
+
+@app.get("/chain/{symbol}")
+def chain(
+    symbol: str,
+    expiration: Optional[int] = None,
+    strike_pct: float = Query(DEFAULT_STRIKE_PCT, ge=1, le=200),
+):
+    """Return chain for a single expiration."""
+    symbol = symbol.upper().strip()
+    try:
+        t = yf.Ticker(symbol)
+        info = t.info
+        quote = _quote_dict(info, symbol)
+        spot = quote["regularMarketPrice"]
+
+        expirations = list(t.options or [])
+        if not expirations:
+            raise HTTPException(404, f"No options for {symbol}")
+
+        exp_unix = [int(datetime.strptime(e, "%Y-%m-%d").timestamp()) for e in expirations]
+
+        if expiration is None:
+            exp_str = expirations[0]
+            exp_ts = exp_unix[0]
+        else:
+            matches = [(e, u) for e, u in zip(expirations, exp_unix) if u == expiration]
+            if not matches:
+                raise HTTPException(400, f"Expiration {expiration} not available")
+            exp_str, exp_ts = matches[0]
+
+        chain = t.option_chain(exp_str)
+        return {
+            "quote": quote,
+            "expirationDates": sorted(exp_unix),
+            "selectedExpiration": exp_ts,
+            "calls": _option_rows(chain.calls, exp_ts, spot, strike_pct),
+            "puts":  _option_rows(chain.puts,  exp_ts, spot, strike_pct),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"yfinance error: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
