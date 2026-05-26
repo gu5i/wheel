@@ -49,9 +49,25 @@ def _quote_dict(info: dict, symbol: str) -> dict:
     }
 
 
+def _safe_float(v) -> float:
+    """Convert to float, handling None/NaN/strings safely."""
+    try:
+        f = float(v)
+        if f != f:  # NaN check (NaN != NaN)
+            return 0.0
+        return f
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_int(v) -> int:
+    """Convert to int, handling None/NaN/strings safely."""
+    return int(_safe_float(v))
+
+
 def _option_rows(df, expiration_ts: int, spot: float, strike_pct: float) -> list[dict]:
     """Convert a yfinance options DataFrame to dicts, filtered to strikes within ±strike_pct% of spot.
-    
+
     Includes ALL contracts in the strike range, even ones with no bid/ask/last (zombie contracts).
     The frontend can decide what to do with them.
     """
@@ -63,18 +79,18 @@ def _option_rows(df, expiration_ts: int, spot: float, strike_pct: float) -> list
     high_strike = spot * (1 + strike_pct / 100)
 
     for _, r in df.iterrows():
-        strike = float(r.get("strike", 0) or 0)
+        strike = _safe_float(r.get("strike", 0))
         if strike <= 0 or strike < low_strike or strike > high_strike:
             continue
         rows.append({
             "contractSymbol": str(r.get("contractSymbol", "")),
             "strike": strike,
-            "bid": float(r.get("bid", 0) or 0),
-            "ask": float(r.get("ask", 0) or 0),
-            "lastPrice": float(r.get("lastPrice", 0) or 0),
-            "volume": int(r.get("volume", 0) or 0),
-            "openInterest": int(r.get("openInterest", 0) or 0),
-            "impliedVolatility": float(r.get("impliedVolatility", 0) or 0),
+            "bid": _safe_float(r.get("bid", 0)),
+            "ask": _safe_float(r.get("ask", 0)),
+            "lastPrice": _safe_float(r.get("lastPrice", 0)),
+            "volume": _safe_int(r.get("volume", 0)),
+            "openInterest": _safe_int(r.get("openInterest", 0)),
+            "impliedVolatility": _safe_float(r.get("impliedVolatility", 0)),
             "inTheMoney": bool(r.get("inTheMoney", False)),
             "expiration": expiration_ts,
         })
