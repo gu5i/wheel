@@ -878,13 +878,23 @@ function renderTickerInfo() {
   document.getElementById('infoVolume').textContent = abbr(q.regularMarketVolume);
 }
 
+// Calendar-day diff between today (local) and an exp timestamp (UTC midnight).
+// Brokers/traders count calendar days, not 24h periods.
+function calendarDte(expUnix) {
+  const expDate = new Date(expUnix * 1000);
+  const todayUTC = new Date();
+  // Compare UTC dates to avoid timezone drift in either direction
+  const a = Date.UTC(expDate.getUTCFullYear(), expDate.getUTCMonth(), expDate.getUTCDate());
+  const b = Date.UTC(todayUTC.getUTCFullYear(), todayUTC.getUTCMonth(), todayUTC.getUTCDate());
+  return Math.round((a - b) / 86400000);
+}
+
 function renderExpirations() {
   document.getElementById('expirations').style.display = 'flex';
   const wrap = document.getElementById('expChips');
   wrap.innerHTML = '';
-  const now = Date.now() / 1000;
   state.expirations.forEach(ts => {
-    const dte = Math.round((ts - now) / 86400);
+    const dte = calendarDte(ts);
     const chip = document.createElement('div');
     chip.className = 'exp-chip';
     if (ts === state.selectedExpiration) chip.classList.add('active');
@@ -955,8 +965,7 @@ function scoreLiquidity(oi, vol) {
 
 function scoreContract(c, spot, side) {
   if (!c.strike) return null;
-  const now = Date.now() / 1000;
-  const dte = Math.max(0.5, (c.expiration - now) / 86400);
+  const dte = Math.max(0.5, calendarDte(c.expiration));
   
   const mid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
   const hasPrice = mid > 0;
