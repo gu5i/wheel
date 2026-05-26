@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>WHEEL // OPTIONS SCREENER</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --panel: #131313;
+    --panel-2: #1a1a1a;
+    --border: #262626;
+    --border-hi: #3a3a3a;
+    --text: #e8e6e1;
+    --muted: #6b6b6b;
+    --accent: #d4ff3a;       /* radioactive lime - primary action */
+    --accent-2: #ff6b35;     /* sodium-flare orange - alerts/sell-side */
+    --green: #4ade80;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --blue: #60a5fa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(212,255,58,0.04) 0%, transparent 40%),
+      radial-gradient(circle at 80% 90%, rgba(255,107,53,0.03) 0%, transparent 40%);
+  }
+
+  /* Header */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 18px 28px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(10,10,10,0.85);
+    backdrop-filter: blur(8px);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  .brand h1 {
+    font-family: 'Fraunces', serif;
+    font-weight: 800;
+    font-size: 22px;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+  .brand .tag {
+    font-size: 10px;
+    color: var(--accent);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    border-left: 1px solid var(--border-hi);
+    padding-left: 14px;
+  }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .status-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+  .status-dot.off { background: var(--red); box-shadow: 0 0 8px var(--red); }
+  @keyframes pulse { 0%,100% {opacity:1} 50% {opacity:0.4} }
+
+  /* Main layout */
+  main {
+    padding: 24px 28px 60px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+
+  /* Control bar */
+  .controls {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 18px;
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr auto;
+    gap: 16px;
+    align-items: end;
+    margin-bottom: 24px;
+  }
+  .control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .control-group label {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  input[type="text"], select {
+    background: var(--bg);
+    border: 1px solid var(--border-hi);
+    color: var(--text);
+    padding: 9px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input[type="text"]:focus, select:focus {
+    border-color: var(--accent);
+  }
+  button {
+    background: var(--accent);
+    color: #0a0a0a;
+    border: none;
+    padding: 10px 18px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  button:hover { background: #e2ff5a; transform: translateY(-1px); }
+  button:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; transform: none; }
+  button.ghost {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border-hi);
+  }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); background: transparent; }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .toggle {
+    position: relative;
+    width: 34px;
+    height: 18px;
+    background: var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .toggle.on { background: var(--accent); }
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    background: var(--text);
+    border-radius: 50%;
+    transition: left 0.2s;
+  }
+  .toggle.on::after { left: 18px; background: #0a0a0a; }
+
+  /* Ticker chips */
+  .universe {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 16px 18px;
+    margin-bottom: 24px;
+  }
+  .universe-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .universe-header h3 {
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .chip {
+    padding: 5px 10px;
+    border: 1px solid var(--border-hi);
+    background: var(--bg);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip.active {
+    background: var(--accent);
+    color: #0a0a0a;
+    border-color: var(--accent);
+  }
+  .chip .remove {
+    margin-left: 6px;
+    color: var(--muted);
+    font-weight: bold;
+  }
+  .chip.active .remove { color: #0a0a0a; }
+
+  /* Tabs */
+  .tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    padding: 14px 22px;
+    cursor: pointer;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: all 0.15s;
+    font-weight: 600;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .tab .count {
+    margin-left: 8px;
+    padding: 1px 7px;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 10px;
+    border-radius: 2px;
+  }
+  .tab.active .count { background: var(--accent); color: #0a0a0a; }
+
+  /* Ticker info bar */
+  .ticker-info {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    padding: 16px 20px;
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .info-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .info-block .lbl {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .info-block .val {
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .info-block .val.big {
+    font-family: 'Fraunces', serif;
+    font-size: 22px;
+    font-weight: 600;
+  }
+  .info-block .val.green { color: var(--green); }
+  .info-block .val.red { color: var(--red); }
+
+  /* Expiration selector */
+  .expirations {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    padding: 12px 20px;
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    align-items: center;
+  }
+  .exp-label {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-right: 12px;
+    white-space: nowrap;
+  }
+  .exp-chip {
+    padding: 6px 10px;
+    border: 1px solid var(--border-hi);
+    background: var(--bg);
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .exp-chip:hover { border-color: var(--accent); }
+  .exp-chip.active {
+    background: var(--accent);
+    color: #0a0a0a;
+    border-color: var(--accent);
+  }
+  .exp-chip .dte {
+    margin-left: 6px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .exp-chip.active .dte { color: #0a0a0a; }
+
+  /* Filter bar */
+  .filter-bar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    padding: 12px 20px;
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 11px;
+  }
+  .filter-bar .field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .filter-bar input[type="number"] {
+    width: 64px;
+    background: var(--bg);
+    border: 1px solid var(--border-hi);
+    color: var(--text);
+    padding: 5px 8px;
+    font-family: inherit;
+    font-size: 11px;
+    outline: none;
+  }
+  .filter-bar input[type="number"]:focus { border-color: var(--accent); }
+
+  /* Table */
+  .table-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    overflow-x: auto;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  th {
+    text-align: right;
+    padding: 11px 14px;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  th:hover { color: var(--accent); }
+  th.sorted { color: var(--accent); }
+  th.sorted::after {
+    content: '';
+    display: inline-block;
+    margin-left: 4px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+  }
+  th.sorted.desc::after { border-top: 4px solid var(--accent); }
+  th.sorted.asc::after { border-bottom: 4px solid var(--accent); }
+  td {
+    text-align: right;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  tbody tr { transition: background 0.1s; }
+  tbody tr:hover { background: rgba(212,255,58,0.03); }
+  tbody tr.itm { background: rgba(255,107,53,0.04); }
+  tbody tr.itm:hover { background: rgba(255,107,53,0.08); }
+
+  .ticker-cell {
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: 0.03em;
+  }
+  .ticker-cell .sub {
+    display: block;
+    font-size: 10px;
+    color: var(--muted);
+    font-weight: 400;
+    margin-top: 1px;
+    letter-spacing: 0;
+  }
+  .score {
+    display: inline-block;
+    padding: 2px 8px;
+    font-weight: 700;
+    font-size: 11px;
+    min-width: 40px;
+    text-align: center;
+  }
+  .score.s5 { background: var(--accent); color: #0a0a0a; }
+  .score.s4 { background: rgba(212,255,58,0.5); color: #0a0a0a; }
+  .score.s3 { background: rgba(212,255,58,0.25); color: var(--text); }
+  .score.s2 { background: rgba(212,255,58,0.1); color: var(--text); }
+  .score.s1 { background: var(--panel-2); color: var(--muted); }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 6px;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 10px;
+    border: 1px solid var(--border);
+  }
+  .badge.itm { background: rgba(255,107,53,0.15); color: var(--accent-2); border-color: rgba(255,107,53,0.3); }
+  .badge.otm { background: rgba(74,222,128,0.1); color: var(--green); border-color: rgba(74,222,128,0.3); }
+
+  /* States */
+  .empty-state, .loading-state, .error-state {
+    padding: 60px 20px;
+    text-align: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: none;
+    color: var(--muted);
+  }
+  .empty-state .icon {
+    font-family: 'Fraunces', serif;
+    font-size: 48px;
+    color: var(--border-hi);
+    margin-bottom: 12px;
+  }
+  .empty-state .msg {
+    font-size: 13px;
+    margin-bottom: 4px;
+    color: var(--text);
+  }
+  .empty-state .sub {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .spinner {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--border-hi);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 10px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error-state { color: var(--red); }
+  .error-state .hint { color: var(--muted); margin-top: 8px; font-size: 11px; }
+
+  /* Footer note */
+  .footnote {
+    margin-top: 16px;
+    font-size: 10px;
+    color: var(--muted);
+    text-align: right;
+    letter-spacing: 0.05em;
+  }
+
+  /* Tab content wrapper */
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  @media (max-width: 900px) {
+    .controls { grid-template-columns: 1fr; }
+    main { padding: 16px; }
+    header { padding: 14px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>Wheel<span style="color:var(--accent)">.</span></h1>
+    <span class="tag">Options Screener</span>
+  </div>
+  <div class="header-right">
+    <span><span class="status-dot" id="statusDot"></span><span id="statusText">READY</span></span>
+    <span id="lastUpdate">—</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- CONTROLS -->
+  <div class="controls">
+    <div class="control-group">
+      <label>Add Ticker</label>
+      <input type="text" id="tickerInput" placeholder="e.g. AAPL, NVDA, MSFT" autocomplete="off" />
+    </div>
+    <div class="control-group">
+      <label>Backend URL</label>
+      <input type="text" id="backendUrl" placeholder="https://your-app.replit.app" autocomplete="off" />
+    </div>
+    <div class="control-group">
+      <label>Action</label>
+      <button id="fetchBtn">Fetch Chain</button>
+    </div>
+    <div class="control-group">
+      <label>&nbsp;</label>
+      <button class="ghost" id="clearBtn">Clear Custom</button>
+    </div>
+  </div>
+
+  <!-- WHEEL UNIVERSE -->
+  <div class="universe">
+    <div class="universe-header">
+      <h3>Wheel Universe — click to load chain</h3>
+      <span style="font-size:10px;color:var(--muted)" id="universeHint">Tap a ticker to fetch its option chain</span>
+    </div>
+    <div class="chips" id="universeChips"></div>
+  </div>
+
+  <!-- TABS -->
+  <div class="tabs">
+    <div class="tab active" data-tab="puts">Cash-Secured Puts <span class="count" id="putsCount">0</span></div>
+    <div class="tab" data-tab="calls">Covered Calls <span class="count" id="callsCount">0</span></div>
+  </div>
+
+  <!-- TICKER INFO -->
+  <div class="ticker-info" id="tickerInfo" style="display:none;">
+    <div class="info-block">
+      <span class="lbl">Symbol</span>
+      <span class="val big" id="infoSymbol">—</span>
+    </div>
+    <div class="info-block">
+      <span class="lbl">Last</span>
+      <span class="val big" id="infoPrice">—</span>
+    </div>
+    <div class="info-block">
+      <span class="lbl">Day Δ</span>
+      <span class="val" id="infoChange">—</span>
+    </div>
+    <div class="info-block">
+      <span class="lbl">Bid / Ask</span>
+      <span class="val" id="infoBidAsk">—</span>
+    </div>
+    <div class="info-block">
+      <span class="lbl">52w Range</span>
+      <span class="val" id="infoRange">—</span>
+    </div>
+    <div class="info-block">
+      <span class="lbl">Volume</span>
+      <span class="val" id="infoVolume">—</span>
+    </div>
+  </div>
+
+  <!-- EXPIRATIONS -->
+  <div class="expirations" id="expirations" style="display:none;">
+    <span class="exp-label">Expirations</span>
+    <div id="expChips" style="display:flex;gap:6px;"></div>
+  </div>
+
+  <!-- FILTERS -->
+  <div class="filter-bar" id="filterBar" style="display:none;">
+    <div class="field">
+      <label>Min DTE</label>
+      <input type="number" id="minDTE" value="0" min="0" />
+    </div>
+    <div class="field">
+      <label>Max DTE</label>
+      <input type="number" id="maxDTE" value="90" min="0" />
+    </div>
+    <div class="field">
+      <label>Min Volume</label>
+      <input type="number" id="minVol" value="0" min="0" />
+    </div>
+    <div class="field">
+      <label>Min OI</label>
+      <input type="number" id="minOI" value="0" min="0" />
+    </div>
+    <div class="field">
+      <label>Max Δ from spot %</label>
+      <input type="number" id="maxDist" value="100" min="0" />
+    </div>
+    <div class="field" style="margin-left:auto;color:var(--muted);font-size:10px;">
+      Showing top 50 by composite score
+    </div>
+  </div>
+
+  <!-- PUTS TAB -->
+  <div class="tab-content active" id="putsTab">
+    <div id="putsContainer">
+      <div class="empty-state">
+        <div class="icon">∅</div>
+        <div class="msg">No chain loaded</div>
+        <div class="sub">Select a ticker from your universe above or enter a custom symbol to begin</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CALLS TAB -->
+  <div class="tab-content" id="callsTab">
+    <div id="callsContainer">
+      <div class="empty-state">
+        <div class="icon">∅</div>
+        <div class="msg">No chain loaded</div>
+        <div class="sub">Covered calls populate once a chain is loaded</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    Data: Yahoo Finance via your backend · IV from yfinance, Delta computed via Black-Scholes (r=4.5%) · Composite score weights yield, premium/delta, DTE-fit, and IV equally
+  </div>
+
+</main>
+
+<script>
+// ============================================================
+// WHEEL UNIVERSE (from Gus's strategy)
+// ============================================================
+const WHEEL_UNIVERSE = [
+  'VKTX','NU','IREN','PATH','UNH','LULU','HOOD','SN',
+  'NMAX','PYPL','KLAR','RDDT','MELI','ONON','RBLX','YPF'
+];
+
+const CUSTOM_KEY = 'wheel_custom_tickers';
+let customTickers = JSON.parse(localStorage.getItem(CUSTOM_KEY) || '[]');
+
+// State
+let state = {
+  symbol: null,
+  expirations: [],
+  selectedExpiration: null,
+  underlying: null,
+  chain: null,
+  fullData: null,        // full Nasdaq response, cached per symbol
+  activeTab: 'puts',
+  sort: { key: 'score', dir: 'desc' },
+};
+
+// ============================================================
+// BACKEND URL (persisted)
+// ============================================================
+const BACKEND_KEY = 'wheel_backend_url';
+const backendInput = document.getElementById('backendUrl');
+backendInput.value = localStorage.getItem(BACKEND_KEY) || '';
+backendInput.addEventListener('change', () => {
+  localStorage.setItem(BACKEND_KEY, backendInput.value.trim().replace(/\/$/, ''));
+});
+
+function getBackendBase() {
+  const v = (backendInput.value || localStorage.getItem(BACKEND_KEY) || '').trim().replace(/\/$/, '');
+  return v;
+}
+
+async function fetchBackend(symbol) {
+  const base = getBackendBase();
+  if (!base) throw new Error('No backend URL configured. Paste your Replit/Render URL into the "Backend URL" field above.');
+  const url = `${base}/chain/${encodeURIComponent(symbol.toUpperCase())}/all`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    let msg = `HTTP ${resp.status}`;
+    try { const j = await resp.json(); if (j.detail) msg += ` — ${j.detail}`; } catch {}
+    throw new Error(msg);
+  }
+  return resp.json();
+}
+
+// Black-Scholes for Delta only (yfinance ships IV but not greeks)
+const RISK_FREE = 0.045;
+function erf(x) {
+  const a1=0.254829592, a2=-0.284496736, a3=1.421413741,
+        a4=-1.453152027, a5=1.061405429, p=0.3275911;
+  const sign = x < 0 ? -1 : 1;
+  x = Math.abs(x);
+  const t = 1/(1+p*x);
+  const y = 1-(((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
+  return sign*y;
+}
+function deltaBS(S, K, T, r, sigma, isCall) {
+  if (T <= 0 || sigma <= 0) return isCall ? (S>K?1:0) : (S<K?-1:0);
+  const d1 = (Math.log(S/K)+(r+0.5*sigma*sigma)*T)/(sigma*Math.sqrt(T));
+  const N = x => 0.5*(1+erf(x/Math.SQRT2));
+  return isCall ? N(d1) : N(d1)-1;
+}
+function enrichDelta(contracts, spot, isCall) {
+  const now = Date.now()/1000;
+  for (const c of contracts) {
+    const T = Math.max(1/365, (c.expiration - now)/(365*86400));
+    const sigma = c.impliedVolatility || 0;
+    c.delta = (sigma > 0 && spot > 0) ? deltaBS(spot, c.strike, T, RISK_FREE, sigma, isCall) : 0;
+  }
+}
+
+// ============================================================
+// CHAIN FETCH + LOAD
+// ============================================================
+async function loadSymbol(symbol, dateTs) {
+  symbol = symbol.trim().toUpperCase();
+  if (!symbol) return;
+  setStatus('LOADING', false);
+
+  document.querySelectorAll('.chip').forEach(c => {
+    c.classList.toggle('active', c.dataset.ticker === symbol);
+  });
+
+  try {
+    if (!state.fullData || state.symbol !== symbol) {
+      const result = await fetchBackend(symbol);
+      state.fullData = result;
+      state.symbol = symbol;
+      state.underlying = result.quote;
+      state.expirations = result.expirationDates;
+      state.selectedExpiration = dateTs || result.expirationDates[0];
+    } else if (dateTs) {
+      state.selectedExpiration = dateTs;
+    }
+
+    const exp = state.selectedExpiration;
+    const slice = state.fullData.optionsByExpiration[exp] || { calls: [], puts: [] };
+    const spot = state.underlying.regularMarketPrice;
+
+    enrichDelta(slice.calls, spot, true);
+    enrichDelta(slice.puts, spot, false);
+
+    state.chain = { calls: slice.calls, puts: slice.puts };
+
+    renderTickerInfo();
+    renderExpirations();
+    renderFilters();
+    renderTables();
+
+    document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    setStatus('READY', true);
+  } catch (e) {
+    console.error(e);
+    showError(symbol, e.message);
+    setStatus('ERROR', false);
+  }
+}
+
+function setStatus(text, ok) {
+  document.getElementById('statusText').textContent = text;
+  const dot = document.getElementById('statusDot');
+  dot.classList.toggle('off', !ok);
+}
+
+function showError(symbol, msg) {
+  const html = `
+    <div class="error-state">
+      <strong>Failed to load ${symbol}</strong><br/>
+      ${msg}
+      <div class="hint">Make sure your backend URL is set correctly above (e.g. <code>https://your-app.replit.app</code>) and that the Replit service is awake. First request after sleep can take ~30 sec.</div>
+    </div>`;
+  document.getElementById('putsContainer').innerHTML = html;
+  document.getElementById('callsContainer').innerHTML = html;
+}
+
+// ============================================================
+// RENDERERS
+// ============================================================
+function renderUniverseChips() {
+  const container = document.getElementById('universeChips');
+  const all = [...WHEEL_UNIVERSE, ...customTickers];
+  container.innerHTML = '';
+  all.forEach(t => {
+    const isCustom = !WHEEL_UNIVERSE.includes(t);
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.dataset.ticker = t;
+    chip.innerHTML = t + (isCustom ? '<span class="remove" data-remove="'+t+'">×</span>' : '');
+    chip.addEventListener('click', (e) => {
+      if (e.target.dataset.remove) {
+        customTickers = customTickers.filter(x => x !== t);
+        localStorage.setItem(CUSTOM_KEY, JSON.stringify(customTickers));
+        renderUniverseChips();
+        return;
+      }
+      loadSymbol(t);
+    });
+    container.appendChild(chip);
+  });
+}
+
+function renderTickerInfo() {
+  const q = state.underlying;
+  if (!q) return;
+  document.getElementById('tickerInfo').style.display = 'flex';
+  document.getElementById('infoSymbol').textContent = q.symbol;
+  document.getElementById('infoPrice').textContent = '$' + fmt(q.regularMarketPrice);
+  const chg = q.regularMarketChange || 0;
+  const chgPct = q.regularMarketChangePercent || 0;
+  const chgEl = document.getElementById('infoChange');
+  chgEl.textContent = `${chg >= 0 ? '+' : ''}${fmt(chg)} (${chg >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
+  chgEl.className = 'val ' + (chg >= 0 ? 'green' : 'red');
+  document.getElementById('infoBidAsk').textContent = `${fmt(q.bid)} / ${fmt(q.ask)}`;
+  document.getElementById('infoRange').textContent = `${fmt(q.fiftyTwoWeekLow)} – ${fmt(q.fiftyTwoWeekHigh)}`;
+  document.getElementById('infoVolume').textContent = abbr(q.regularMarketVolume);
+}
+
+function renderExpirations() {
+  document.getElementById('expirations').style.display = 'flex';
+  const wrap = document.getElementById('expChips');
+  wrap.innerHTML = '';
+  const now = Date.now() / 1000;
+  state.expirations.forEach(ts => {
+    const dte = Math.round((ts - now) / 86400);
+    const chip = document.createElement('div');
+    chip.className = 'exp-chip';
+    if (ts === state.selectedExpiration) chip.classList.add('active');
+    const d = new Date(ts * 1000);
+    chip.innerHTML = `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}<span class="dte">${dte}d</span>`;
+    chip.addEventListener('click', () => loadSymbol(state.symbol, ts));
+    wrap.appendChild(chip);
+  });
+}
+
+function renderFilters() {
+  document.getElementById('filterBar').style.display = 'flex';
+}
+
+// ============================================================
+// SCORING - composite of all ranking criteria
+// ============================================================
+function scoreContract(c, spot, side) {
+  // side: 'put' (sell CSP) or 'call' (sell CC)
+  const now = Date.now() / 1000;
+  const dte = Math.max(0.5, (c.expiration - now) / 86400);
+  const mid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
+  if (mid <= 0 || !c.strike) return null;
+
+  // 1. Annualized yield on cash collateral (for puts) or stock value (for calls)
+  const denom = side === 'put' ? c.strike : spot;
+  const annYield = (mid / denom) * (365 / dte) * 100;
+
+  // 2. Distance from spot (% OTM positive, ITM negative)
+  // For puts: OTM = strike < spot. For calls: OTM = strike > spot.
+  const distPct = side === 'put'
+    ? ((spot - c.strike) / spot) * 100
+    : ((c.strike - spot) / spot) * 100;
+
+  // 3. Premium-per-delta — now using real BS delta
+  const absDelta = Math.abs(c.delta || 0);
+  const premPerDelta = absDelta > 0.01 ? mid / absDelta : 0;
+  // Keep the distance-based fallback ratio for sorting too
+  const premPerDist = distPct > 0 ? mid / Math.max(0.5, distPct) : 0;
+
+  // 4. DTE fit (peak theta capture 7-45 days)
+  let dteFit = 0;
+  if (dte >= 7 && dte <= 45) dteFit = 100;
+  else if (dte >= 3 && dte < 7) dteFit = 60;
+  else if (dte > 45 && dte <= 60) dteFit = 70;
+  else if (dte > 60 && dte <= 90) dteFit = 40;
+  else if (dte > 90) dteFit = 20;
+  else dteFit = 30;
+
+  // 5. IV
+  const iv = (c.impliedVolatility || 0) * 100;
+
+  // 6. Liquidity
+  const liquidity = Math.min(1, ((c.openInterest || 0) + (c.volume || 0) * 2) / 500);
+
+  const itm = c.inTheMoney;
+
+  return {
+    contractSymbol: c.contractSymbol,
+    strike: c.strike,
+    bid: c.bid,
+    ask: c.ask,
+    mid,
+    last: c.lastPrice,
+    volume: c.volume || 0,
+    oi: c.openInterest || 0,
+    iv,
+    delta: c.delta || 0,
+    dte: Math.round(dte),
+    annYield,
+    distPct,
+    premPerDelta,
+    premPerDist,
+    dteFit,
+    liquidity,
+    itm,
+    side,
+  };
+}
+
+function composite(rows) {
+  if (!rows.length) return rows;
+  const maxYield = Math.max(...rows.map(r => r.annYield));
+  const maxPpd = Math.max(...rows.map(r => r.premPerDelta));
+  const maxIv = Math.max(...rows.map(r => r.iv));
+  rows.forEach(r => {
+    const sYield = maxYield > 0 ? (r.annYield / maxYield) * 100 : 0;
+    const sPpd = maxPpd > 0 ? (r.premPerDelta / maxPpd) * 100 : 0;
+    const sIv = maxIv > 0 ? (r.iv / maxIv) * 100 : 0;
+    const sDte = r.dteFit;
+    // Equal weight 4 criteria, liquidity as multiplier
+    const raw = (sYield + sPpd + sIv + sDte) / 4;
+    r.score = raw * (0.3 + 0.7 * r.liquidity); // liquidity damps illiquid
+  });
+  return rows;
+}
+
+function filterRows(rows) {
+  const minDTE = +document.getElementById('minDTE').value || 0;
+  const maxDTE = +document.getElementById('maxDTE').value || 9999;
+  const minVol = +document.getElementById('minVol').value || 0;
+  const minOI = +document.getElementById('minOI').value || 0;
+  const maxDist = +document.getElementById('maxDist').value || 9999;
+  return rows.filter(r =>
+    r.dte >= minDTE && r.dte <= maxDTE &&
+    r.volume >= minVol && r.oi >= minOI &&
+    Math.abs(r.distPct) <= maxDist
+  );
+}
+
+function scoreBand(s) {
+  if (s >= 75) return 's5';
+  if (s >= 60) return 's4';
+  if (s >= 45) return 's3';
+  if (s >= 30) return 's2';
+  return 's1';
+}
+
+// ============================================================
+// TABLES
+// ============================================================
+function renderTables() {
+  if (!state.chain) return;
+  const spot = state.underlying.regularMarketPrice;
+
+  // DEBUG: log what's actually in the chain
+  console.log('[DEBUG] Spot:', spot);
+  console.log('[DEBUG] Raw puts count:', state.chain.puts.length, '| Raw calls count:', state.chain.calls.length);
+  if (state.chain.puts[0]) console.log('[DEBUG] Sample put:', state.chain.puts[0]);
+  if (state.chain.calls[0]) console.log('[DEBUG] Sample call:', state.chain.calls[0]);
+
+  const puts = state.chain.puts.map(p => scoreContract(p, spot, 'put')).filter(r => r && r.contractSymbol);
+  const calls = state.chain.calls.map(c => scoreContract(c, spot, 'call')).filter(r => r && r.contractSymbol);
+
+  console.log('[DEBUG] After scoring - puts:', puts.length, '| calls:', calls.length);
+  if (puts[0]) console.log('[DEBUG] Sample scored put:', puts[0]);
+
+  composite(puts);
+  composite(calls);
+
+  document.getElementById('putsCount').textContent = puts.length;
+  document.getElementById('callsCount').textContent = calls.length;
+
+  renderTable('puts', puts);
+  renderTable('calls', calls);
+}
+
+function renderTable(side, rows) {
+  const filtered = filterRows(rows);
+  const sorted = sortRows(filtered, state.sort);
+  const top = sorted.slice(0, 50);
+  const container = document.getElementById(side + 'Container');
+
+  // Visible diagnostics
+  const diagBar = `<div style="padding:8px 16px;background:var(--panel-2);font-size:10px;color:var(--muted);letter-spacing:0.05em;">
+    ${state.chain[side].length} contracts in chain → ${rows.length} scored → ${filtered.length} after filters → showing top ${Math.min(top.length, 50)}
+  </div>`;
+
+  if (!top.length) {
+    const totalAvailable = rows.length;
+    const msg = totalAvailable > 0
+      ? `<div class="msg">No contracts match your filters</div><div class="sub">${totalAvailable} contracts exist for this expiration but none pass the current filters. Try raising "Max Δ from spot %" or lowering min Volume/OI.</div>`
+      : `<div class="msg">No ${side} for this expiration</div><div class="sub">Try a different expiration date</div>`;
+    container.innerHTML = diagBar + `<div class="empty-state"><div class="icon">∅</div>${msg}</div>`;
+    return;
+  }
+
+  const headers = [
+    { k: 'score', l: 'Score' },
+    { k: 'strike', l: 'Strike' },
+    { k: 'distPct', l: '% OTM' },
+    { k: 'mid', l: 'Mid' },
+    { k: 'bid', l: 'Bid' },
+    { k: 'ask', l: 'Ask' },
+    { k: 'annYield', l: 'Ann. Yield %' },
+    { k: 'delta', l: 'Delta' },
+    { k: 'premPerDelta', l: 'Prem/|Δ|' },
+    { k: 'iv', l: 'IV %' },
+    { k: 'dte', l: 'DTE' },
+    { k: 'volume', l: 'Vol' },
+    { k: 'oi', l: 'OI' },
+  ];
+
+  let html = '<div class="table-wrap"><table><thead><tr>';
+  html += '<th data-key="contractSymbol">Contract</th>';
+  headers.forEach(h => {
+    const sortCls = state.sort.key === h.k ? 'sorted ' + state.sort.dir : '';
+    html += `<th class="${sortCls}" data-key="${h.k}">${h.l}</th>`;
+  });
+  html += '</tr></thead><tbody>';
+
+  top.forEach(r => {
+    const band = scoreBand(r.score || 0);
+    const itmCls = r.itm ? 'itm' : '';
+    const itmBadge = r.itm ? '<span class="badge itm">ITM</span>' : '<span class="badge otm">OTM</span>';
+    const expDate = new Date(r.dte * 86400 * 1000 + Date.now()).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    html += `<tr class="${itmCls}">
+      <td class="ticker-cell">
+        ${itmBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
+        <span class="sub">${r.contractSymbol}</span>
+      </td>
+      <td><span class="score ${band}">${(r.score||0).toFixed(0)}</span></td>
+      <td>$${fmt(r.strike)}</td>
+      <td style="color:${r.distPct >= 0 ? 'var(--green)' : 'var(--accent-2)'}">${r.distPct.toFixed(1)}%</td>
+      <td><strong>$${fmt(r.mid)}</strong></td>
+      <td>$${fmt(r.bid)}</td>
+      <td>$${fmt(r.ask)}</td>
+      <td style="color:var(--accent)"><strong>${r.annYield.toFixed(1)}%</strong></td>
+      <td>${r.delta.toFixed(2)}</td>
+      <td>${r.premPerDelta.toFixed(2)}</td>
+      <td>${r.iv.toFixed(1)}%</td>
+      <td>${r.dte}</td>
+      <td>${abbr(r.volume)}</td>
+      <td>${abbr(r.oi)}</td>
+    </tr>`;
+  });
+
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
+
+  // attach sort handlers
+  container.querySelectorAll('th').forEach(th => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.key;
+      if (state.sort.key === k) {
+        state.sort.dir = state.sort.dir === 'desc' ? 'asc' : 'desc';
+      } else {
+        state.sort.key = k;
+        state.sort.dir = 'desc';
+      }
+      renderTables();
+    });
+  });
+}
+
+function sortRows(rows, sort) {
+  const { key, dir } = sort;
+  const sign = dir === 'desc' ? -1 : 1;
+  return [...rows].sort((a, b) => {
+    const av = a[key], bv = b[key];
+    if (typeof av === 'string') return sign * av.localeCompare(bv);
+    return sign * ((av || 0) - (bv || 0));
+  });
+}
+
+// ============================================================
+// UTIL
+// ============================================================
+function fmt(n) {
+  if (n === undefined || n === null || isNaN(n)) return '—';
+  return Number(n).toFixed(2);
+}
+function abbr(n) {
+  if (!n) return '0';
+  if (n >= 1e9) return (n/1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+  return n.toString();
+}
+
+// ============================================================
+// EVENT WIRING
+// ============================================================
+document.getElementById('fetchBtn').addEventListener('click', () => {
+  const v = document.getElementById('tickerInput').value.trim().toUpperCase();
+  if (!v) return;
+  if (!WHEEL_UNIVERSE.includes(v) && !customTickers.includes(v)) {
+    customTickers.push(v);
+    localStorage.setItem(CUSTOM_KEY, JSON.stringify(customTickers));
+    renderUniverseChips();
+  }
+  state.fullData = null; // force refetch
+  loadSymbol(v);
+  document.getElementById('tickerInput').value = '';
+});
+
+document.getElementById('tickerInput').addEventListener('keypress', e => {
+  if (e.key === 'Enter') document.getElementById('fetchBtn').click();
+});
+
+document.getElementById('clearBtn').addEventListener('click', () => {
+  if (confirm('Remove all custom tickers?')) {
+    customTickers = [];
+    localStorage.setItem(CUSTOM_KEY, JSON.stringify(customTickers));
+    renderUniverseChips();
+  }
+});
+
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById(t.dataset.tab + 'Tab').classList.add('active');
+    state.activeTab = t.dataset.tab;
+  });
+});
+
+['minDTE','maxDTE','minVol','minOI','maxDist'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    if (state.chain) renderTables();
+  });
+});
+
+// init
+renderUniverseChips();
+</script>
+</body>
+</html>
