@@ -961,9 +961,13 @@ function scoreContract(c, spot, side) {
   const mid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
   const hasPrice = mid > 0;
 
-  // Annualized yield (on collateral required for the trade)
+  // Annualized yield (used internally for scoring — needs to be DTE-comparable)
   const denom = side === 'put' ? c.strike : spot;
   const annYield = hasPrice ? (mid / denom) * (365 / dte) * 100 : 0;
+  // Total return on collateral for this single trade (no annualization)
+  const totalReturn = hasPrice ? (mid / denom) * 100 : 0;
+  // Per-day yield — honest version of "yield velocity" without the annualization distortion
+  const yieldPerDay = hasPrice ? (mid / denom) * (1 / dte) * 100 : 0;
 
   // Distance from spot (% OTM positive)
   const distPct = side === 'put'
@@ -986,6 +990,8 @@ function scoreContract(c, spot, side) {
     delta: c.delta || 0,
     dte: Math.round(dte),
     annYield,
+    totalReturn,
+    yieldPerDay,
     distPct,
     itm: c.inTheMoney,
     side,
@@ -1093,7 +1099,8 @@ function renderTable(side, rows) {
     { k: 'mid', l: 'Mid' },
     { k: 'bid', l: 'Bid' },
     { k: 'ask', l: 'Ask' },
-    { k: 'annYield', l: 'Ann. Yield %' },
+    { k: 'totalReturn', l: 'Return %' },
+    { k: 'yieldPerDay', l: 'Yield/Day %' },
     { k: 'delta', l: 'Delta' },
     { k: 'iv', l: 'IV %' },
     { k: 'dte', l: 'DTE' },
@@ -1133,7 +1140,8 @@ Total: ${(r.score||0).toFixed(1)}">${(r.score||0).toFixed(0)}</span></td>
       <td><strong>$${fmt(r.mid)}</strong></td>
       <td>$${fmt(r.bid)}</td>
       <td>$${fmt(r.ask)}</td>
-      <td style="color:var(--accent)"><strong>${r.annYield.toFixed(1)}%</strong></td>
+      <td style="color:var(--accent)"><strong>${r.totalReturn.toFixed(2)}%</strong></td>
+      <td style="color:var(--accent)">${r.yieldPerDay.toFixed(3)}%</td>
       <td>${r.delta.toFixed(2)}</td>
       <td>${r.iv.toFixed(1)}%</td>
       <td>${r.dte}</td>
