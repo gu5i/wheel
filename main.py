@@ -50,7 +50,11 @@ def _quote_dict(info: dict, symbol: str) -> dict:
 
 
 def _option_rows(df, expiration_ts: int, spot: float, strike_pct: float) -> list[dict]:
-    """Convert a yfinance options DataFrame to dicts, filtered to strikes within ±strike_pct% of spot."""
+    """Convert a yfinance options DataFrame to dicts, filtered to strikes within ±strike_pct% of spot.
+    
+    Includes ALL contracts in the strike range, even ones with no bid/ask/last (zombie contracts).
+    The frontend can decide what to do with them.
+    """
     rows = []
     if df is None or df.empty or spot <= 0:
         return rows
@@ -62,17 +66,12 @@ def _option_rows(df, expiration_ts: int, spot: float, strike_pct: float) -> list
         strike = float(r.get("strike", 0) or 0)
         if strike <= 0 or strike < low_strike or strike > high_strike:
             continue
-        bid = float(r.get("bid", 0) or 0)
-        ask = float(r.get("ask", 0) or 0)
-        last = float(r.get("lastPrice", 0) or 0)
-        if bid == 0 and ask == 0 and last == 0:
-            continue
         rows.append({
             "contractSymbol": str(r.get("contractSymbol", "")),
             "strike": strike,
-            "bid": bid,
-            "ask": ask,
-            "lastPrice": last,
+            "bid": float(r.get("bid", 0) or 0),
+            "ask": float(r.get("ask", 0) or 0),
+            "lastPrice": float(r.get("lastPrice", 0) or 0),
             "volume": int(r.get("volume", 0) or 0),
             "openInterest": int(r.get("openInterest", 0) or 0),
             "impliedVolatility": float(r.get("impliedVolatility", 0) or 0),
@@ -134,6 +133,7 @@ def chain_all(
 
         options_by_exp = {}
         exp_unix = []
+        warnings = []
         for exp_str in expirations:
             try:
                 ts = int(datetime.strptime(exp_str, "%Y-%m-%d").timestamp())
@@ -142,13 +142,15 @@ def chain_all(
                 chain = t.option_chain(exp_str)
                 calls = _option_rows(chain.calls, ts, spot, strike_pct)
                 puts = _option_rows(chain.puts, ts, spot, strike_pct)
-                # only include the expiration if at least one side has data after filtering
                 if not calls and not puts:
+                    warnings.append({"exp": exp_str, "reason": "no contracts in strike range"})
                     continue
                 exp_unix.append(ts)
                 options_by_exp[str(ts)] = {"calls": calls, "puts": puts}
             except Exception as e:
-                print(f"[warn] {symbol} exp {exp_str}: {e}")
+                err = f"{type(e).__name__}: {e}"
+                warnings.append({"exp": exp_str, "reason": err})
+                print(f"[warn] {symbol} exp {exp_str}: {err}")
                 continue
 
         return {
@@ -156,6 +158,9 @@ def chain_all(
             "expirationDates": sorted(exp_unix),
             "optionsByExpiration": options_by_exp,
             "filters": {"max_days": max_days, "strike_pct": strike_pct},
+            "warnings": warnings,
+            "expirationsAvailable": expirations,
+            "expirationsReturned": len(exp_unix),
         }
     except HTTPException:
         raise
