@@ -463,6 +463,9 @@
   }
   .badge.itm { background: rgba(255,107,53,0.15); color: var(--accent-2); border-color: rgba(255,107,53,0.3); }
   .badge.otm { background: rgba(74,222,128,0.1); color: var(--green); border-color: rgba(74,222,128,0.3); }
+  .badge.nq { background: rgba(107,107,107,0.15); color: var(--muted); border-color: rgba(107,107,107,0.3); }
+  tbody tr.no-quote { opacity: 0.45; }
+  tbody tr.no-quote:hover { opacity: 0.8; }
 
   /* States */
   .empty-state, .loading-state, .error-state {
@@ -629,8 +632,12 @@
       <label>Max Δ from spot %</label>
       <input type="number" id="maxDist" value="100" min="0" />
     </div>
+    <div class="field">
+      <label style="margin-right:4px;">Show All</label>
+      <div class="toggle" id="showAllToggle"></div>
+    </div>
     <div class="field" style="margin-left:auto;color:var(--muted);font-size:10px;">
-      Showing top 50 by composite score
+      <span id="filterModeLabel">Showing top 50 by composite score</span>
     </div>
   </div>
 
@@ -794,6 +801,15 @@ async function loadSymbol(symbol, dateTs) {
     renderFilters();
     renderTables();
 
+    // Surface backend warnings about skipped expirations
+    const warns = state.fullData?.warnings || [];
+    if (warns.length > 0) {
+      const expAvail = state.fullData.expirationsAvailable?.length || 0;
+      const expReturned = state.fullData.expirationsReturned || 0;
+      const skipped = warns.length;
+      console.log(`[INFO] Backend returned ${expReturned}/${expAvail} expirations. Skipped:`, warns);
+    }
+
     document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
     setStatus('READY', true);
   } catch (e) {
@@ -890,12 +906,14 @@ function scoreContract(c, spot, side) {
   // side: 'put' (sell CSP) or 'call' (sell CC)
   const now = Date.now() / 1000;
   const dte = Math.max(0.5, (c.expiration - now) / 86400);
+  if (!c.strike) return null;
+  
   const mid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
-  if (mid <= 0 || !c.strike) return null;
+  const hasPrice = mid > 0;
 
-  // 1. Annualized yield on cash collateral (for puts) or stock value (for calls)
+  // 1. Annualized yield - zero if no price
   const denom = side === 'put' ? c.strike : spot;
-  const annYield = (mid / denom) * (365 / dte) * 100;
+  const annYield = hasPrice ? (mid / denom) * (365 / dte) * 100 : 0;
 
   // 2. Distance from spot (% OTM positive, ITM negative)
   // For puts: OTM = strike < spot. For calls: OTM = strike > spot.
@@ -959,14 +977,23 @@ function composite(rows) {
     const sPpd = maxPpd > 0 ? (r.premPerDelta / maxPpd) * 100 : 0;
     const sIv = maxIv > 0 ? (r.iv / maxIv) * 100 : 0;
     const sDte = r.dteFit;
-    // Equal weight 4 criteria, liquidity as multiplier
     const raw = (sYield + sPpd + sIv + sDte) / 4;
-    r.score = raw * (0.3 + 0.7 * r.liquidity); // liquidity damps illiquid
+    const liqMul = (0.3 + 0.7 * r.liquidity);
+    r.scoreBreakdown = {
+      sYield: sYield.toFixed(1),
+      sPpd: sPpd.toFixed(1),
+      sIv: sIv.toFixed(1),
+      sDte: sDte.toFixed(1),
+      raw: raw.toFixed(1),
+      liqMul: liqMul.toFixed(2),
+    };
+    r.score = raw * liqMul;
   });
   return rows;
 }
 
 function filterRows(rows) {
+  if (window.SHOW_ALL) return rows;  // bypass all filters
   const minDTE = +document.getElementById('minDTE').value || 0;
   const maxDTE = +document.getElementById('maxDTE').value || 9999;
   const minVol = +document.getElementById('minVol').value || 0;
@@ -1019,7 +1046,8 @@ function renderTables() {
 function renderTable(side, rows) {
   const filtered = filterRows(rows);
   const sorted = sortRows(filtered, state.sort);
-  const top = sorted.slice(0, 50);
+  const limit = window.SHOW_ALL ? sorted.length : 50;
+  const top = sorted.slice(0, limit);
   const container = document.getElementById(side + 'Container');
 
   // Visible diagnostics
@@ -1063,14 +1091,23 @@ function renderTable(side, rows) {
   top.forEach(r => {
     const band = scoreBand(r.score || 0);
     const itmCls = r.itm ? 'itm' : '';
+    const noQuote = !(r.mid > 0);
+    const noQuoteCls = noQuote ? ' no-quote' : '';
     const itmBadge = r.itm ? '<span class="badge itm">ITM</span>' : '<span class="badge otm">OTM</span>';
+    const noQuoteBadge = noQuote ? ' <span class="badge nq">NO BID</span>' : '';
     const expDate = new Date(r.dte * 86400 * 1000 + Date.now()).toLocaleDateString('en-US',{month:'short',day:'numeric'});
-    html += `<tr class="${itmCls}">
+    html += `<tr class="${itmCls}${noQuoteCls}">
       <td class="ticker-cell">
-        ${itmBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
+        ${itmBadge}${noQuoteBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
         <span class="sub">${r.contractSymbol}</span>
       </td>
-      <td><span class="score ${band}">${(r.score||0).toFixed(0)}</span></td>
+      <td><span class="score ${band}" title="Score breakdown:
+Yield: ${r.scoreBreakdown?.sYield || 0}/100
+Prem/Delta: ${r.scoreBreakdown?.sPpd || 0}/100
+IV: ${r.scoreBreakdown?.sIv || 0}/100
+DTE-fit: ${r.scoreBreakdown?.sDte || 0}/100
+Avg: ${r.scoreBreakdown?.raw || 0}
+× Liquidity ${r.scoreBreakdown?.liqMul || 0} = ${(r.score||0).toFixed(1)}">${(r.score||0).toFixed(0)}</span></td>
       <td>$${fmt(r.strike)}</td>
       <td style="color:${r.distPct >= 0 ? 'var(--green)' : 'var(--accent-2)'}">${r.distPct.toFixed(1)}%</td>
       <td><strong>$${fmt(r.mid)}</strong></td>
@@ -1171,6 +1208,17 @@ document.querySelectorAll('.tab').forEach(t => {
   document.getElementById(id).addEventListener('input', () => {
     if (state.chain) renderTables();
   });
+});
+
+// Show All toggle
+window.SHOW_ALL = false;
+document.getElementById('showAllToggle').addEventListener('click', () => {
+  window.SHOW_ALL = !window.SHOW_ALL;
+  document.getElementById('showAllToggle').classList.toggle('on', window.SHOW_ALL);
+  document.getElementById('filterModeLabel').textContent = window.SHOW_ALL
+    ? 'SHOWING ALL CONTRACTS — filters ignored'
+    : 'Showing top 50 by composite score';
+  if (state.chain) renderTables();
 });
 
 // init
