@@ -664,7 +664,7 @@
   </div>
 
   <div class="footnote">
-    Data: Yahoo Finance via your backend · IV from yfinance, Delta computed via Black-Scholes (r=4.5%) · Composite score weights yield, premium/delta, DTE-fit, and IV equally
+    Data: Yahoo Finance via your backend · Delta computed via Black-Scholes (r=4.5%) · Score: 40% yield · 30% delta-fit (target |0.25|) · 20% DTE-fit (21–45d) · 10% liquidity. Hover Score for breakdown.
   </div>
 
 </main>
@@ -900,49 +900,78 @@ function renderFilters() {
 }
 
 // ============================================================
-// SCORING - composite of all ranking criteria
+// SCORING — strategy-aware composite
+// 
+// Target profile: balanced wheel ("get paid well, rarely assigned")
+//   - DTE target: 21-45 days
+//   - Delta target: |0.25|
+//   - Weights: 40% yield, 30% delta-fit, 20% dte-fit, 10% liquidity
+//
+// These are tunable in SCORE_CONFIG below.
 // ============================================================
+const SCORE_CONFIG = {
+  weights: { yield: 0.40, delta: 0.30, dte: 0.20, liquidity: 0.10 },
+  dte:   { lo: 21, hi: 45, halfLife: 14 },        // plateau 21-45, ±14d falloff to ~50
+  delta: { target: 0.25, sigma: 0.10 },           // gaussian centered on 0.25
+  yieldAnchors: [0, 10, 20, 30, 50],              // % annualized -> 0, 25, 50, 75, 100
+  yieldScores:  [0, 25, 50, 75, 100],
+};
+
+// Linear interpolation against piecewise anchors.
+function piecewise(x, anchors, scores) {
+  if (x <= anchors[0]) return scores[0];
+  for (let i = 1; i < anchors.length; i++) {
+    if (x <= anchors[i]) {
+      const t = (x - anchors[i-1]) / (anchors[i] - anchors[i-1]);
+      return scores[i-1] + t * (scores[i] - scores[i-1]);
+    }
+  }
+  return scores[scores.length - 1];
+}
+
+function scoreYield(annYieldPct) {
+  return piecewise(Math.max(0, annYieldPct), SCORE_CONFIG.yieldAnchors, SCORE_CONFIG.yieldScores);
+}
+
+// Gaussian-ish fit: 100 at target, decays smoothly with distance
+function scoreDelta(absDelta) {
+  if (absDelta <= 0) return 0;
+  const { target, sigma } = SCORE_CONFIG.delta;
+  return 100 * Math.exp(-0.5 * Math.pow((absDelta - target) / sigma, 2));
+}
+
+// Plateau between [lo, hi], linear falloff outside with given half-life
+function scoreDte(dte) {
+  const { lo, hi, halfLife } = SCORE_CONFIG.dte;
+  if (dte >= lo && dte <= hi) return 100;
+  const dist = dte < lo ? (lo - dte) : (dte - hi);
+  // half-life sets where score = 50: linear so that score=0 at 2*halfLife outside range
+  return Math.max(0, 100 - (dist / halfLife) * 50);
+}
+
+function scoreLiquidity(oi, vol) {
+  return Math.min(100, ((oi || 0) + (vol || 0) * 2) / 5);
+}
+
 function scoreContract(c, spot, side) {
-  // side: 'put' (sell CSP) or 'call' (sell CC)
+  if (!c.strike) return null;
   const now = Date.now() / 1000;
   const dte = Math.max(0.5, (c.expiration - now) / 86400);
-  if (!c.strike) return null;
   
   const mid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
   const hasPrice = mid > 0;
 
-  // 1. Annualized yield - zero if no price
+  // Annualized yield (on collateral required for the trade)
   const denom = side === 'put' ? c.strike : spot;
   const annYield = hasPrice ? (mid / denom) * (365 / dte) * 100 : 0;
 
-  // 2. Distance from spot (% OTM positive, ITM negative)
-  // For puts: OTM = strike < spot. For calls: OTM = strike > spot.
+  // Distance from spot (% OTM positive)
   const distPct = side === 'put'
     ? ((spot - c.strike) / spot) * 100
     : ((c.strike - spot) / spot) * 100;
 
-  // 3. Premium-per-delta — now using real BS delta
   const absDelta = Math.abs(c.delta || 0);
-  const premPerDelta = absDelta > 0.01 ? mid / absDelta : 0;
-  // Keep the distance-based fallback ratio for sorting too
-  const premPerDist = distPct > 0 ? mid / Math.max(0.5, distPct) : 0;
-
-  // 4. DTE fit (peak theta capture 7-45 days)
-  let dteFit = 0;
-  if (dte >= 7 && dte <= 45) dteFit = 100;
-  else if (dte >= 3 && dte < 7) dteFit = 60;
-  else if (dte > 45 && dte <= 60) dteFit = 70;
-  else if (dte > 60 && dte <= 90) dteFit = 40;
-  else if (dte > 90) dteFit = 20;
-  else dteFit = 30;
-
-  // 5. IV
   const iv = (c.impliedVolatility || 0) * 100;
-
-  // 6. Liquidity
-  const liquidity = Math.min(1, ((c.openInterest || 0) + (c.volume || 0) * 2) / 500);
-
-  const itm = c.inTheMoney;
 
   return {
     contractSymbol: c.contractSymbol,
@@ -958,36 +987,29 @@ function scoreContract(c, spot, side) {
     dte: Math.round(dte),
     annYield,
     distPct,
-    premPerDelta,
-    premPerDist,
-    dteFit,
-    liquidity,
-    itm,
+    itm: c.inTheMoney,
     side,
+    hasPrice,
   };
 }
 
 function composite(rows) {
   if (!rows.length) return rows;
-  const maxYield = Math.max(...rows.map(r => r.annYield));
-  const maxPpd = Math.max(...rows.map(r => r.premPerDelta));
-  const maxIv = Math.max(...rows.map(r => r.iv));
+  const w = SCORE_CONFIG.weights;
   rows.forEach(r => {
-    const sYield = maxYield > 0 ? (r.annYield / maxYield) * 100 : 0;
-    const sPpd = maxPpd > 0 ? (r.premPerDelta / maxPpd) * 100 : 0;
-    const sIv = maxIv > 0 ? (r.iv / maxIv) * 100 : 0;
-    const sDte = r.dteFit;
-    const raw = (sYield + sPpd + sIv + sDte) / 4;
-    const liqMul = (0.3 + 0.7 * r.liquidity);
+    const sY = scoreYield(r.annYield);
+    const sD = scoreDelta(Math.abs(r.delta));
+    const sT = scoreDte(r.dte);
+    const sL = scoreLiquidity(r.oi, r.volume);
+    const score = w.yield * sY + w.delta * sD + w.dte * sT + w.liquidity * sL;
     r.scoreBreakdown = {
-      sYield: sYield.toFixed(1),
-      sPpd: sPpd.toFixed(1),
-      sIv: sIv.toFixed(1),
-      sDte: sDte.toFixed(1),
-      raw: raw.toFixed(1),
-      liqMul: liqMul.toFixed(2),
+      sYield: sY.toFixed(0),
+      sDelta: sD.toFixed(0),
+      sDte: sT.toFixed(0),
+      sLiq: sL.toFixed(0),
+      wYield: w.yield, wDelta: w.delta, wDte: w.dte, wLiq: w.liquidity,
     };
-    r.score = raw * liqMul;
+    r.score = r.hasPrice ? score : 0; // no quote = no score
   });
   return rows;
 }
@@ -1073,7 +1095,6 @@ function renderTable(side, rows) {
     { k: 'ask', l: 'Ask' },
     { k: 'annYield', l: 'Ann. Yield %' },
     { k: 'delta', l: 'Delta' },
-    { k: 'premPerDelta', l: 'Prem/|Δ|' },
     { k: 'iv', l: 'IV %' },
     { k: 'dte', l: 'DTE' },
     { k: 'volume', l: 'Vol' },
@@ -1101,13 +1122,12 @@ function renderTable(side, rows) {
         ${itmBadge}${noQuoteBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
         <span class="sub">${r.contractSymbol}</span>
       </td>
-      <td><span class="score ${band}" title="Score breakdown:
-Yield: ${r.scoreBreakdown?.sYield || 0}/100
-Prem/Delta: ${r.scoreBreakdown?.sPpd || 0}/100
-IV: ${r.scoreBreakdown?.sIv || 0}/100
-DTE-fit: ${r.scoreBreakdown?.sDte || 0}/100
-Avg: ${r.scoreBreakdown?.raw || 0}
-× Liquidity ${r.scoreBreakdown?.liqMul || 0} = ${(r.score||0).toFixed(1)}">${(r.score||0).toFixed(0)}</span></td>
+      <td><span class="score ${band}" title="Score = weighted average:
+Yield (40%):     ${r.scoreBreakdown?.sYield || 0}/100  → ${(r.scoreBreakdown?.sYield * r.scoreBreakdown?.wYield).toFixed(1)}
+Delta-fit (30%): ${r.scoreBreakdown?.sDelta || 0}/100  → ${(r.scoreBreakdown?.sDelta * r.scoreBreakdown?.wDelta).toFixed(1)}
+DTE-fit (20%):   ${r.scoreBreakdown?.sDte || 0}/100  → ${(r.scoreBreakdown?.sDte * r.scoreBreakdown?.wDte).toFixed(1)}
+Liquidity (10%): ${r.scoreBreakdown?.sLiq || 0}/100  → ${(r.scoreBreakdown?.sLiq * r.scoreBreakdown?.wLiq).toFixed(1)}
+Total: ${(r.score||0).toFixed(1)}">${(r.score||0).toFixed(0)}</span></td>
       <td>$${fmt(r.strike)}</td>
       <td style="color:${r.distPct >= 0 ? 'var(--green)' : 'var(--accent-2)'}">${r.distPct.toFixed(1)}%</td>
       <td><strong>$${fmt(r.mid)}</strong></td>
@@ -1115,7 +1135,6 @@ Avg: ${r.scoreBreakdown?.raw || 0}
       <td>$${fmt(r.ask)}</td>
       <td style="color:var(--accent)"><strong>${r.annYield.toFixed(1)}%</strong></td>
       <td>${r.delta.toFixed(2)}</td>
-      <td>${r.premPerDelta.toFixed(2)}</td>
       <td>${r.iv.toFixed(1)}%</td>
       <td>${r.dte}</td>
       <td>${abbr(r.volume)}</td>
