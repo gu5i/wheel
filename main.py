@@ -3,14 +3,20 @@ Wheel Options Backend
 =====================
 FastAPI service serving option chain data for the wheel dashboard.
 
-Defaults are tuned for the wheel strategy:
-  - Only expirations within the next MAX_DAYS days (default 90)
+Defaults tuned for wheel strategy:
+  - Only expirations within next MAX_DAYS days (default 90)
   - Only strikes within ±STRIKE_PCT% of spot (default 50)
 
-Both can be overridden per-request via query params:
+Both overridable per-request:
   /chain/AAPL/all?max_days=120&strike_pct=30
+
+Features:
+  - In-memory cache (60s) to soften Yahoo rate limits
+  - Retry-with-backoff on rate-limit responses
+  - fast_info + 2-day history instead of expensive .info call
 """
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -18,7 +24,7 @@ import yfinance as yf
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Wheel Options API", version="1.1.0")
+app = FastAPI(title="Wheel Options API", version="1.2.0")
 
 allowed = os.getenv("ALLOWED_ORIGIN", "*")
 app.add_middleware(
@@ -28,32 +34,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Defaults — change these here if you want different system-wide defaults
 DEFAULT_MAX_DAYS = 90
 DEFAULT_STRIKE_PCT = 50
+CACHE_TTL_SECONDS = 60  # cache /chain/X/all responses for 60s
+_cache: dict = {}        # key -> (timestamp, response)
 
 
-def _quote_dict(info: dict, symbol: str) -> dict:
-    price = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose") or 0
-    return {
-        "symbol": symbol,
-        "regularMarketPrice": price,
-        "regularMarketChange": info.get("regularMarketChange", 0) or 0,
-        "regularMarketChangePercent": (info.get("regularMarketChangePercent", 0) or 0) * (100 if abs(info.get("regularMarketChangePercent", 0) or 0) < 1 else 1),
-        "bid": info.get("bid", 0) or 0,
-        "ask": info.get("ask", 0) or 0,
-        "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow", 0) or 0,
-        "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh", 0) or 0,
-        "regularMarketVolume": info.get("regularMarketVolume", 0) or info.get("volume", 0) or 0,
-        "shortName": info.get("shortName", symbol),
-    }
-
+# ---- Helpers ---------------------------------------------------------------
 
 def _safe_float(v) -> float:
-    """Convert to float, handling None/NaN/strings safely."""
     try:
         f = float(v)
-        if f != f:  # NaN check (NaN != NaN)
+        if f != f:  # NaN
             return 0.0
         return f
     except (TypeError, ValueError):
@@ -61,16 +53,67 @@ def _safe_float(v) -> float:
 
 
 def _safe_int(v) -> int:
-    """Convert to int, handling None/NaN/strings safely."""
     return int(_safe_float(v))
 
 
-def _option_rows(df, expiration_ts: int, spot: float, strike_pct: float) -> list[dict]:
-    """Convert a yfinance options DataFrame to dicts, filtered to strikes within ±strike_pct% of spot.
-
-    Includes ALL contracts in the strike range, even ones with no bid/ask/last (zombie contracts).
-    The frontend can decide what to do with them.
+def _fetch_quote_light(t: yf.Ticker, symbol: str) -> dict:
+    """Get underlying quote using fast_info + 2-day history.
+    
+    Way lighter than t.info (which hits ~6 internal endpoints).
+    Falls back gracefully if pieces are missing.
     """
+    price = change = change_pct = bid = ask = 0.0
+    fifty_low = fifty_high = 0.0
+    volume = 0
+    short_name = symbol
+
+    # fast_info — single request, gives price, bid/ask, 52w range, volume
+    try:
+        fi = t.fast_info
+        price = _safe_float(fi.get("last_price")) or _safe_float(fi.get("regular_market_previous_close"))
+        bid = _safe_float(fi.get("bid"))
+        ask = _safe_float(fi.get("ask"))
+        fifty_low = _safe_float(fi.get("year_low"))
+        fifty_high = _safe_float(fi.get("year_high"))
+        volume = _safe_int(fi.get("last_volume")) or _safe_int(fi.get("regular_market_volume"))
+        # change comes from previous close
+        prev_close = _safe_float(fi.get("previous_close")) or _safe_float(fi.get("regular_market_previous_close"))
+        if price and prev_close:
+            change = price - prev_close
+            change_pct = (change / prev_close) * 100 if prev_close else 0
+    except Exception as e:
+        print(f"[warn] fast_info failed for {symbol}: {e}")
+
+    # If price still missing, fall back to a tiny history call
+    if not price:
+        try:
+            hist = t.history(period="2d", auto_adjust=False)
+            if not hist.empty:
+                price = _safe_float(hist["Close"].iloc[-1])
+                if len(hist) >= 2:
+                    prev = _safe_float(hist["Close"].iloc[-2])
+                    change = price - prev
+                    change_pct = (change / prev) * 100 if prev else 0
+                volume = volume or _safe_int(hist["Volume"].iloc[-1])
+        except Exception as e:
+            print(f"[warn] history fallback failed for {symbol}: {e}")
+
+    return {
+        "symbol": symbol,
+        "regularMarketPrice": price,
+        "regularMarketChange": change,
+        "regularMarketChangePercent": change_pct,
+        "bid": bid,
+        "ask": ask,
+        "fiftyTwoWeekLow": fifty_low,
+        "fiftyTwoWeekHigh": fifty_high,
+        "regularMarketVolume": volume,
+        "shortName": short_name,
+    }
+
+
+def _option_rows(df, expiration_ts: int, spot: float, strike_pct: float) -> list[dict]:
+    """Convert a yfinance options DataFrame to dicts, filtered to strikes within ±strike_pct% of spot."""
     rows = []
     if df is None or df.empty or spot <= 0:
         return rows
@@ -97,19 +140,42 @@ def _option_rows(df, expiration_ts: int, spot: float, strike_pct: float) -> list
     return rows
 
 
+def _is_rate_limit(e: Exception) -> bool:
+    msg = str(e).lower()
+    return "too many requests" in msg or "rate limit" in msg or "429" in msg
+
+
+def _with_retry(fn, *args, attempts=2, backoff=2.0, **kwargs):
+    """Call fn(); if it hits a rate-limit, sleep `backoff` seconds and retry once."""
+    last_exc = None
+    for i in range(attempts):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            last_exc = e
+            if _is_rate_limit(e) and i < attempts - 1:
+                time.sleep(backoff)
+                continue
+            raise
+    raise last_exc  # unreachable
+
+
+# ---- Endpoints -------------------------------------------------------------
+
 @app.get("/")
 def root():
     return {
         "service": "Wheel Options API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "defaults": {"max_days": DEFAULT_MAX_DAYS, "strike_pct": DEFAULT_STRIKE_PCT},
+        "cache_ttl_seconds": CACHE_TTL_SECONDS,
         "endpoints": ["/health", "/quote/{symbol}", "/chain/{symbol}", "/chain/{symbol}/all"],
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "time": datetime.now(timezone.utc).isoformat(), "cache_entries": len(_cache)}
 
 
 @app.get("/quote/{symbol}")
@@ -117,31 +183,41 @@ def quote(symbol: str):
     symbol = symbol.upper().strip()
     try:
         t = yf.Ticker(symbol)
-        info = t.info
-        if not info or (not info.get("regularMarketPrice") and not info.get("previousClose")):
+        q = _with_retry(_fetch_quote_light, t, symbol)
+        if not q["regularMarketPrice"]:
             raise HTTPException(404, f"No quote data for {symbol}")
-        return _quote_dict(info, symbol)
+        return q
     except HTTPException:
         raise
     except Exception as e:
+        if _is_rate_limit(e):
+            raise HTTPException(429, f"Rate limited by Yahoo. Try again in a minute.")
         raise HTTPException(500, f"yfinance error: {e}")
 
 
 @app.get("/chain/{symbol}/all")
 def chain_all(
     symbol: str,
-    max_days: int = Query(DEFAULT_MAX_DAYS, ge=1, le=730, description="Only include expirations within this many days"),
-    strike_pct: float = Query(DEFAULT_STRIKE_PCT, ge=1, le=200, description="Only include strikes within ±this % of spot"),
+    max_days: int = Query(DEFAULT_MAX_DAYS, ge=1, le=730),
+    strike_pct: float = Query(DEFAULT_STRIKE_PCT, ge=1, le=200),
 ):
-    """Return quote + every expiration within max_days, each filtered to strikes within ±strike_pct% of spot."""
     symbol = symbol.upper().strip()
+    cache_key = f"{symbol}|{max_days}|{strike_pct}"
+    now_ts = time.time()
+
+    # Cache hit
+    cached = _cache.get(cache_key)
+    if cached and now_ts - cached[0] < CACHE_TTL_SECONDS:
+        return {**cached[1], "_cached": True, "_cache_age_seconds": int(now_ts - cached[0])}
+
     try:
         t = yf.Ticker(symbol)
-        info = t.info
-        quote = _quote_dict(info, symbol)
+        quote = _with_retry(_fetch_quote_light, t, symbol)
         spot = quote["regularMarketPrice"]
+        if not spot:
+            raise HTTPException(404, f"No quote data for {symbol}")
 
-        expirations = list(t.options or [])
+        expirations = _with_retry(lambda: list(t.options or []))
         if not expirations:
             raise HTTPException(404, f"No options for {symbol}")
 
@@ -154,8 +230,8 @@ def chain_all(
             try:
                 ts = int(datetime.strptime(exp_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
                 if ts > cutoff_ts:
-                    continue  # skip expirations beyond max_days
-                chain = t.option_chain(exp_str)
+                    continue
+                chain = _with_retry(t.option_chain, exp_str)
                 calls = _option_rows(chain.calls, ts, spot, strike_pct)
                 puts = _option_rows(chain.puts, ts, spot, strike_pct)
                 if not calls and not puts:
@@ -169,7 +245,7 @@ def chain_all(
                 print(f"[warn] {symbol} exp {exp_str}: {err}")
                 continue
 
-        return {
+        response = {
             "quote": quote,
             "expirationDates": sorted(exp_unix),
             "optionsByExpiration": options_by_exp,
@@ -178,9 +254,13 @@ def chain_all(
             "expirationsAvailable": expirations,
             "expirationsReturned": len(exp_unix),
         }
+        _cache[cache_key] = (now_ts, response)
+        return response
     except HTTPException:
         raise
     except Exception as e:
+        if _is_rate_limit(e):
+            raise HTTPException(429, "Rate limited by Yahoo. Try again in 30-60 seconds.")
         raise HTTPException(500, f"yfinance error: {e}")
 
 
@@ -190,12 +270,10 @@ def chain(
     expiration: Optional[int] = None,
     strike_pct: float = Query(DEFAULT_STRIKE_PCT, ge=1, le=200),
 ):
-    """Return chain for a single expiration."""
     symbol = symbol.upper().strip()
     try:
         t = yf.Ticker(symbol)
-        info = t.info
-        quote = _quote_dict(info, symbol)
+        quote = _with_retry(_fetch_quote_light, t, symbol)
         spot = quote["regularMarketPrice"]
 
         expirations = list(t.options or [])
@@ -213,7 +291,7 @@ def chain(
                 raise HTTPException(400, f"Expiration {expiration} not available")
             exp_str, exp_ts = matches[0]
 
-        chain = t.option_chain(exp_str)
+        chain = _with_retry(t.option_chain, exp_str)
         return {
             "quote": quote,
             "expirationDates": sorted(exp_unix),
@@ -224,7 +302,16 @@ def chain(
     except HTTPException:
         raise
     except Exception as e:
+        if _is_rate_limit(e):
+            raise HTTPException(429, "Rate limited by Yahoo. Try again in 30-60 seconds.")
         raise HTTPException(500, f"yfinance error: {e}")
+
+
+@app.get("/cache/clear")
+def cache_clear():
+    n = len(_cache)
+    _cache.clear()
+    return {"cleared": n}
 
 
 if __name__ == "__main__":
