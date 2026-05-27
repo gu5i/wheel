@@ -694,17 +694,18 @@ let state = {
 };
 
 // ============================================================
-// BACKEND URL (persisted)
+// BACKEND URL (persisted, with hardcoded default)
 // ============================================================
+const DEFAULT_BACKEND = 'https://wheel-k4h1.onrender.com';
 const BACKEND_KEY = 'wheel_backend_url';
 const backendInput = document.getElementById('backendUrl');
-backendInput.value = localStorage.getItem(BACKEND_KEY) || '';
+backendInput.value = localStorage.getItem(BACKEND_KEY) || DEFAULT_BACKEND;
 backendInput.addEventListener('change', () => {
   localStorage.setItem(BACKEND_KEY, backendInput.value.trim().replace(/\/$/, ''));
 });
 
 function getBackendBase() {
-  const v = (backendInput.value || localStorage.getItem(BACKEND_KEY) || '').trim().replace(/\/$/, '');
+  const v = (backendInput.value || localStorage.getItem(BACKEND_KEY) || DEFAULT_BACKEND).trim().replace(/\/$/, '');
   return v;
 }
 
