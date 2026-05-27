@@ -56,35 +56,75 @@ def _safe_int(v) -> int:
     return int(_safe_float(v))
 
 
+def _fi_attr(fi, *names, default=0):
+    """Try multiple attribute names on a fast_info object, return first non-None."""
+    for n in names:
+        try:
+            v = getattr(fi, n, None)
+            if v is None:
+                # fast_info also supports dict-style access in some versions
+                try:
+                    v = fi[n]
+                except (KeyError, TypeError):
+                    v = None
+            if v is not None:
+                return v
+        except Exception:
+            continue
+    return default
+
+
 def _fetch_quote_light(t: yf.Ticker, symbol: str) -> dict:
-    """Get underlying quote using fast_info + 2-day history.
+    """Get underlying quote. fast_info for price/range/volume, then try .info for bid/ask.
     
-    Way lighter than t.info (which hits ~6 internal endpoints).
-    Falls back gracefully if pieces are missing.
+    fast_info is a single fast call. .info is heavier but is the only source of bid/ask.
+    We try .info but tolerate failure (rate limit, missing fields).
     """
     price = change = change_pct = bid = ask = 0.0
     fifty_low = fifty_high = 0.0
     volume = 0
     short_name = symbol
 
-    # fast_info — single request, gives price, bid/ask, 52w range, volume
+    # fast_info — single request: price, 52w range, volume, previous close
     try:
         fi = t.fast_info
-        price = _safe_float(fi.get("last_price")) or _safe_float(fi.get("regular_market_previous_close"))
-        bid = _safe_float(fi.get("bid"))
-        ask = _safe_float(fi.get("ask"))
-        fifty_low = _safe_float(fi.get("year_low"))
-        fifty_high = _safe_float(fi.get("year_high"))
-        volume = _safe_int(fi.get("last_volume")) or _safe_int(fi.get("regular_market_volume"))
-        # change comes from previous close
-        prev_close = _safe_float(fi.get("previous_close")) or _safe_float(fi.get("regular_market_previous_close"))
+        price = _safe_float(_fi_attr(fi, "last_price", "lastPrice", "regular_market_previous_close"))
+        fifty_low = _safe_float(_fi_attr(fi, "year_low", "yearLow", "fifty_two_week_low"))
+        fifty_high = _safe_float(_fi_attr(fi, "year_high", "yearHigh", "fifty_two_week_high"))
+        volume = _safe_int(_fi_attr(fi, "last_volume", "lastVolume", "regular_market_volume"))
+        prev_close = _safe_float(_fi_attr(fi, "previous_close", "previousClose", "regular_market_previous_close"))
         if price and prev_close:
             change = price - prev_close
             change_pct = (change / prev_close) * 100 if prev_close else 0
     except Exception as e:
         print(f"[warn] fast_info failed for {symbol}: {e}")
 
-    # If price still missing, fall back to a tiny history call
+    # Try .info for bid/ask + short name. Tolerate failure.
+    try:
+        info = t.info or {}
+        if info:
+            bid = _safe_float(info.get("bid", 0))
+            ask = _safe_float(info.get("ask", 0))
+            short_name = info.get("shortName") or info.get("longName") or symbol
+            # If fast_info missed anything, backfill from .info
+            if not price:
+                price = _safe_float(info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose"))
+            if not fifty_low:
+                fifty_low = _safe_float(info.get("fiftyTwoWeekLow"))
+            if not fifty_high:
+                fifty_high = _safe_float(info.get("fiftyTwoWeekHigh"))
+            if not volume:
+                volume = _safe_int(info.get("regularMarketVolume") or info.get("volume"))
+            if not change:
+                change = _safe_float(info.get("regularMarketChange"))
+                change_pct = _safe_float(info.get("regularMarketChangePercent"))
+                # info sometimes gives pct as decimal (0.015 vs 1.5)
+                if abs(change_pct) < 1 and change_pct != 0:
+                    change_pct *= 100
+    except Exception as e:
+        print(f"[warn] .info failed for {symbol} (continuing): {e}")
+
+    # Last resort for price: short history call
     if not price:
         try:
             hist = t.history(period="2d", auto_adjust=False)
@@ -97,6 +137,11 @@ def _fetch_quote_light(t: yf.Ticker, symbol: str) -> dict:
                 volume = volume or _safe_int(hist["Volume"].iloc[-1])
         except Exception as e:
             print(f"[warn] history fallback failed for {symbol}: {e}")
+
+    # If bid/ask still 0 and market is closed, use price as both (a reasonable display fallback)
+    if bid == 0 and ask == 0 and price > 0:
+        bid = price
+        ask = price
 
     return {
         "symbol": symbol,
