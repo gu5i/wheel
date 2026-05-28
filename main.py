@@ -1,16 +1,16 @@
 """
-Wheel Options Backend — Polygon/Massive edition
+Wheel Options Backend — Massive edition
 ================================================
 FastAPI service serving option chain data for the wheel dashboard,
-backed by Polygon.io (now Massive.com) Options Starter plan.
+backed by Massive.com (formerly Polygon.io) Options Starter plan.
 
-Why Polygon over yfinance:
+Why Massive over yfinance:
   - One API call returns the whole chain WITH greeks + IV (no Black-Scholes needed)
   - Authenticated by API key, not IP -> no shared-IP rate limiting on Render
   - Server-side strike/expiration filtering via query params
 
 Setup:
-  Set environment variable POLYGON_API_KEY on Render (Settings -> Environment).
+  Set environment variable MASSIVE_API_KEY (or legacy POLYGON_API_KEY) on Render.
   Never hardcode the key.
 
 Defaults tuned for wheel strategy:
@@ -27,7 +27,7 @@ import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Wheel Options API (Polygon)", version="2.0.0")
+app = FastAPI(title="Wheel Options API (Massive)", version="2.1.0")
 
 allowed = os.getenv("ALLOWED_ORIGIN", "*")
 app.add_middleware(
@@ -37,8 +37,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = os.getenv("POLYGON_API_KEY", "")
-BASE = "https://api.polygon.io"
+API_KEY = os.getenv("MASSIVE_API_KEY") or os.getenv("POLYGON_API_KEY", "")
+BASE = "https://api.massive.com"
 
 DEFAULT_MAX_DAYS = 90
 DEFAULT_STRIKE_PCT = 50
@@ -63,7 +63,7 @@ def _safe_int(v) -> int:
 
 def _require_key():
     if not API_KEY:
-        raise HTTPException(500, "POLYGON_API_KEY not set on the server. Add it in Render → Settings → Environment.")
+        raise HTTPException(500, "API key not set on the server. Add MASSIVE_API_KEY in Render → Settings → Environment.")
 
 
 def _get(url: str, params: dict | None = None) -> dict:
@@ -72,13 +72,13 @@ def _get(url: str, params: dict | None = None) -> dict:
     p["apiKey"] = API_KEY
     r = requests.get(url, params=p, timeout=20)
     if r.status_code == 401:
-        raise HTTPException(401, "Polygon rejected the API key (401). Check POLYGON_API_KEY.")
+        raise HTTPException(401, "Massive rejected the API key (401). Check MASSIVE_API_KEY.")
     if r.status_code == 403:
-        raise HTTPException(403, "Polygon access forbidden (403) — your plan may not include this endpoint.")
+        raise HTTPException(403, "Massive access forbidden (403) — your plan may not include this endpoint.")
     if r.status_code == 429:
-        raise HTTPException(429, "Polygon rate limit hit (429). Unusual on paid plans — try again shortly.")
+        raise HTTPException(429, "Massive rate limit hit (429). Unusual on paid plans — try again shortly.")
     if not r.ok:
-        raise HTTPException(502, f"Polygon error {r.status_code}: {r.text[:200]}")
+        raise HTTPException(502, f"Massive error {r.status_code}: {r.text[:200]}")
     return r.json()
 
 
@@ -109,7 +109,7 @@ def _spot_price(symbol: str) -> float:
 
 
 def _underlying_quote(symbol: str) -> dict:
-    """Build the quote dict the frontend expects, from Polygon snapshot."""
+    """Build the quote dict the frontend expects, from Massive snapshot."""
     price = change = change_pct = bid = ask = 0.0
     volume = 0
     try:
@@ -149,7 +149,7 @@ def _underlying_quote(symbol: str) -> dict:
 
 
 def _map_contract(c: dict, exp_ts: int) -> dict:
-    """Map one Polygon options snapshot contract to the frontend's shape."""
+    """Map one Massive options snapshot contract to the frontend's shape."""
     details = c.get("details", {})
     greeks = c.get("greeks", {}) or {}
     quote = c.get("last_quote", {}) or {}
@@ -213,7 +213,7 @@ def _exp_to_ts(date_str: str) -> int:
 @app.get("/")
 def root():
     return {
-        "service": "Wheel Options API (Polygon/Massive)",
+        "service": "Wheel Options API (Massive)",
         "version": "2.0.0",
         "key_configured": bool(API_KEY),
         "defaults": {"max_days": DEFAULT_MAX_DAYS, "strike_pct": DEFAULT_STRIKE_PCT},
@@ -313,7 +313,7 @@ def chain_all(
         "filters": {"max_days": max_days, "strike_pct": strike_pct},
         "expirationsReturned": len(exp_set),
         "pagesFetched": pages,
-        "source": "polygon",
+        "source": "massive",
     }
     _cache[cache_key] = (now_ts, response)
     return response
