@@ -969,17 +969,23 @@ function scoreContract(c, spot, side) {
   const iv = (c.impliedVolatility || 0) * 100;
 
   // Price freshness tiers.
-  //   live  -> real bid/ask present (advanced tier only)  -> NO badge
-  //   last  -> no live quote, last trade < 1 day old       -> LAST badge
-  //   stale -> last trade 1 to 5 days old                  -> STALE badge
-  //   dead  -> last trade 5+ days old, or no real trade    -> DEAD badge
+  //   live    -> real bid/ask present (advanced tier only)        -> NO badge
+  //   last    -> no live quote, last trade < 1 day old             -> LAST badge
+  //   stale   -> last trade 1 to 5 days old                        -> STALE badge
+  //   dead    -> explicit no-trade, or last trade 5+ days old      -> DEAD badge
+  //   unknown -> backend didn't send trade-age fields              -> no badge, kept
+  // Important: a *missing* tradeAgeDays must NOT be treated as dead — only an
+  // explicit hasRealTrade===false or a known age >=5 counts as dead.
   const hasLiveQuote = c.bid > 0 && c.ask > 0;
-  const ageDays = (typeof c.tradeAgeDays === 'number') ? c.tradeAgeDays : null;
+  const hasAge = (typeof c.tradeAgeDays === 'number');
+  const ageDays = hasAge ? c.tradeAgeDays : null;
   let freshness;
   if (hasLiveQuote) {
     freshness = 'live';
-  } else if (c.hasRealTrade === false || ageDays === null) {
+  } else if (c.hasRealTrade === false) {
     freshness = 'dead';
+  } else if (!hasAge) {
+    freshness = 'unknown';          // backend gave no age info; don't punish it
   } else if (ageDays >= 5) {
     freshness = 'dead';
   } else if (ageDays >= 1) {
