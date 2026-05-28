@@ -108,41 +108,41 @@ def _spot_price(symbol: str) -> float:
     return 0.0
 
 
-def _underlying_quote(symbol: str) -> dict:
-    """Build the quote dict the frontend expects, from Massive snapshot."""
-    price = change = change_pct = bid = ask = 0.0
-    volume = 0
+def _prev_agg(symbol: str) -> dict:
+    """Previous session's daily bar via /prev (end-of-day, free-tier entitled).
+
+    Returns {} on any failure. Keys of interest: c (close), v (volume),
+    o/h/l (OHLC), vw (vwap).
+    """
     try:
-        data = _get(f"{BASE}/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")
-        t = data.get("ticker", {})
-        day = t.get("day", {})
-        prev = t.get("prevDay", {})
-        last_trade = t.get("lastTrade", {})
-        last_quote = t.get("lastQuote", {})
-
-        price = _safe_float(last_trade.get("p")) or _safe_float(day.get("c")) or _safe_float(prev.get("c"))
-        bid = _safe_float(last_quote.get("p"))  # bid price
-        ask = _safe_float(last_quote.get("P"))  # ask price
-        volume = _safe_int(day.get("v")) or _safe_int(prev.get("v"))
-        change = _safe_float(t.get("todaysChange"))
-        change_pct = _safe_float(t.get("todaysChangePerc"))
-        if not change and price and prev.get("c"):
-            pc = _safe_float(prev.get("c"))
-            change = price - pc
-            change_pct = (change / pc * 100) if pc else 0
+        data = _get(f"{BASE}/v2/aggs/ticker/{symbol}/prev")
+        results = data.get("results", []) or []
+        if results:
+            return results[0]
     except HTTPException:
-        price = _spot_price(symbol)
+        pass
+    return {}
 
-    if bid == 0 and ask == 0 and price > 0:
-        bid = ask = price  # market closed fallback
+
+def _underlying_quote(symbol: str) -> dict:
+    """Underlying quote for an options-plan account (no stock-quote entitlement).
+
+    The live stock snapshot/NBBO endpoints return NOT_AUTHORIZED on an
+    options-only plan, so we don't call them. Price baseline + volume come
+    from the free-tier /prev daily bar. The caller (chain_all) overrides
+    `regularMarketPrice` with the live underlying price from the options
+    chain once it's fetched, and recomputes the change against prevClose.
+    """
+    prev = _prev_agg(symbol)
+    prev_close = _safe_float(prev.get("c"))
+    volume = _safe_int(prev.get("v"))
 
     return {
         "symbol": symbol,
-        "regularMarketPrice": price,
-        "regularMarketChange": change,
-        "regularMarketChangePercent": change_pct,
-        "bid": bid,
-        "ask": ask,
+        "regularMarketPrice": prev_close,   # provisional; overridden with live options price
+        "regularMarketChange": 0.0,
+        "regularMarketChangePercent": 0.0,
+        "prevClose": prev_close,            # kept so caller can compute true change
         "regularMarketVolume": volume,
         "shortName": symbol,
     }
@@ -159,23 +159,9 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
     strike = _safe_float(details.get("strike_price"))
     bid = _safe_float(quote.get("bid"))
     ask = _safe_float(quote.get("ask"))
-    bid_size = _safe_int(quote.get("bid_size"))
-    ask_size = _safe_int(quote.get("ask_size"))
     last = _safe_float(trade.get("price"))
     ctype = details.get("contract_type", "")  # "call" or "put"
     underlying_price = _safe_float(c.get("underlying_asset", {}).get("price"))
-
-    # Last-trade timestamp — field name varies across Massive responses; try all known keys.
-    last_trade_ts = 0
-    for k in ("sip_timestamp", "participant_timestamp", "t", "timestamp", "last_updated"):
-        if k in trade:
-            last_trade_ts = _ts_to_unix_seconds(trade.get(k))
-            if last_trade_ts:
-                break
-    # Age of the last trade in days (0 if unknown). >1 means it hasn't traded since
-    # at least the prior session — a real staleness signal the badge can use.
-    now_s = time.time()
-    trade_age_days = round((now_s - last_trade_ts) / 86400, 2) if last_trade_ts else None
 
     # day OHLC — available on Starter tier even without quotes/trades
     day_close = _safe_float(day.get("close"))
@@ -197,12 +183,7 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
         "strike": strike,
         "bid": bid,
         "ask": ask,
-        "bidSize": bid_size,
-        "askSize": ask_size,
         "lastPrice": last or day_close,  # use day close if no live trade
-        "lastTradeTs": last_trade_ts,     # unix seconds of last trade (0 if unknown)
-        "tradeAgeDays": trade_age_days,   # age of last trade in days (None if unknown)
-        "hasRealTrade": bool(last),       # True if an actual last_trade.price came back
         "dayClose": day_close,
         "dayOpen": day_open,
         "dayHigh": day_high,
@@ -225,22 +206,6 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
 def _exp_to_ts(date_str: str) -> int:
     """'YYYY-MM-DD' -> unix seconds at UTC midnight."""
     return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
-
-
-def _ts_to_unix_seconds(v) -> int:
-    """Massive timestamps come in ns/us/ms/s depending on field; normalize to unix seconds.
-    Returns 0 if missing/unparseable."""
-    n = _safe_float(v)
-    if not n:
-        return 0
-    # Heuristic by magnitude: ns ~1e18, us ~1e15, ms ~1e12, s ~1e9 (for 2020s dates)
-    if n > 1e17:      # nanoseconds
-        return int(n / 1e9)
-    if n > 1e14:      # microseconds
-        return int(n / 1e6)
-    if n > 1e11:      # milliseconds
-        return int(n / 1e3)
-    return int(n)     # already seconds
 
 
 # ---- Endpoints -------------------------------------------------------------
@@ -318,6 +283,7 @@ def chain_all(
     by_exp: dict = {}
     exp_set: set = set()
     pages = 0
+    live_underlying = 0.0   # captured from options chain (underlying_asset.price)
 
     while url and pages < MAX_PAGES:
         data = _get(url, params if pages == 0 else None)
@@ -328,6 +294,8 @@ def chain_all(
             ctype = details.get("contract_type")
             if not exp_str or ctype not in ("call", "put"):
                 continue
+            if not live_underlying:
+                live_underlying = _safe_float(c.get("underlying_asset", {}).get("price"))
             ts = _exp_to_ts(exp_str)
             exp_set.add(ts)
             slot = by_exp.setdefault(str(ts), {"calls": [], "puts": []})
@@ -340,6 +308,16 @@ def chain_all(
 
     if not exp_set:
         raise HTTPException(404, f"No options returned for {symbol} in the requested window")
+
+    # The options chain carries the live (15-min delayed) underlying price.
+    # Use it as the real price, and compute Day change vs the /prev close.
+    prev_close = _safe_float(quote.get("prevClose"))
+    if live_underlying:
+        quote["regularMarketPrice"] = live_underlying
+        if prev_close:
+            chg = live_underlying - prev_close
+            quote["regularMarketChange"] = chg
+            quote["regularMarketChangePercent"] = (chg / prev_close * 100) if prev_close else 0.0
 
     response = {
         "quote": quote,
