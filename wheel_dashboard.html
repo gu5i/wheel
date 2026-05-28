@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>WHEEL // OPTIONS SCREENER</title>
+<title>WHEEL // OPTIONS MONITOR</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&display=swap" rel="stylesheet">
@@ -78,7 +78,15 @@
     gap: 20px;
     font-size: 11px;
     color: var(--muted);
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
+  .status-pill, .update-pill {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+  }
+  .update-pill #lastUpdate { margin-left: 4px; }
   .status-dot {
     display: inline-block;
     width: 7px;
@@ -105,7 +113,7 @@
     border: 1px solid var(--border);
     padding: 18px;
     display: grid;
-    grid-template-columns: 2fr 1fr 1fr auto;
+    grid-template-columns: 2fr 1fr auto;
     gap: 16px;
     align-items: end;
     margin-bottom: 24px;
@@ -374,6 +382,35 @@
   }
   .filter-bar input[type="number"]:focus { border-color: var(--accent); }
 
+  /* Collapsible numeric-filters block (mobile-first ergonomics) */
+  .filter-toggle {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border-hi);
+    padding: 6px 12px;
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .filter-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  .filter-toggle .chev { font-size: 12px; transition: transform 0.18s ease; }
+  .filter-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+  .filter-toggle[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+  .numeric-filters {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .numeric-filters[hidden] { display: none; }
+
   /* Table */
   .table-wrap {
     background: var(--panel);
@@ -525,7 +562,13 @@
   @media (max-width: 900px) {
     .controls { grid-template-columns: 1fr; }
     main { padding: 16px; }
-    header { padding: 14px 16px; }
+    header {
+      padding: 14px 16px;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .brand { justify-content: center; width: 100%; }
+    .header-right { justify-content: center; width: 100%; gap: 14px; }
   }
 </style>
 </head>
@@ -534,11 +577,11 @@
 <header>
   <div class="brand">
     <h1>Wheel<span style="color:var(--accent)">.</span></h1>
-    <span class="tag">Options Screener</span>
+    <span class="tag">Options Monitor</span>
   </div>
   <div class="header-right">
-    <span><span class="status-dot" id="statusDot"></span><span id="statusText">READY</span></span>
-    <span id="lastUpdate">—</span>
+    <span class="status-pill"><span class="status-dot" id="statusDot"></span><span id="statusText">READY</span></span>
+    <span class="update-pill">Updated <span id="lastUpdate">—</span></span>
   </div>
 </header>
 
@@ -558,17 +601,12 @@
       <label>Action</label>
       <button id="fetchBtn">Fetch Chain</button>
     </div>
-    <div class="control-group">
-      <label>&nbsp;</label>
-      <button class="ghost" id="clearBtn">Clear Custom</button>
-    </div>
   </div>
 
   <!-- WHEEL UNIVERSE -->
   <div class="universe">
     <div class="universe-header">
-      <h3>Wheel Universe — click to load chain</h3>
-      <span style="font-size:10px;color:var(--muted)" id="universeHint">Tap a ticker to fetch its option chain</span>
+      <h3>Tickers — tap to load chain</h3>
     </div>
     <div class="chips" id="universeChips"></div>
   </div>
@@ -593,10 +631,6 @@
       <span class="lbl">Day Δ</span>
       <span class="val" id="infoChange">—</span>
     </div>
-    <div class="info-block">
-      <span class="lbl">Prev Vol</span>
-      <span class="val" id="infoVolume">—</span>
-    </div>
   </div>
 
   <!-- EXPIRATIONS -->
@@ -607,25 +641,30 @@
 
   <!-- FILTERS -->
   <div class="filter-bar" id="filterBar" style="display:none;">
-    <div class="field">
-      <label>Min DTE</label>
-      <input type="number" id="minDTE" value="0" min="0" />
-    </div>
-    <div class="field">
-      <label>Max DTE</label>
-      <input type="number" id="maxDTE" value="90" min="0" />
-    </div>
-    <div class="field">
-      <label>Min Volume</label>
-      <input type="number" id="minVol" value="0" min="0" />
-    </div>
-    <div class="field">
-      <label>Min OI</label>
-      <input type="number" id="minOI" value="0" min="0" />
-    </div>
-    <div class="field">
-      <label>Max Δ from spot %</label>
-      <input type="number" id="maxDist" value="100" min="0" />
+    <button type="button" class="filter-toggle" id="filterToggle" aria-expanded="false">
+      <span>Filters</span><span class="chev">▾</span>
+    </button>
+    <div class="numeric-filters" id="numericFilters" hidden>
+      <div class="field">
+        <label>Min DTE</label>
+        <input type="number" id="minDTE" value="0" min="0" />
+      </div>
+      <div class="field">
+        <label>Max DTE</label>
+        <input type="number" id="maxDTE" value="90" min="0" />
+      </div>
+      <div class="field">
+        <label>Min Volume</label>
+        <input type="number" id="minVol" value="0" min="0" />
+      </div>
+      <div class="field">
+        <label>Min OI</label>
+        <input type="number" id="minOI" value="0" min="0" />
+      </div>
+      <div class="field">
+        <label>Max Δ from spot %</label>
+        <input type="number" id="maxDist" value="100" min="0" />
+      </div>
     </div>
     <div class="field">
       <label style="margin-right:4px;">Show All</label>
@@ -794,7 +833,7 @@ async function loadSymbol(symbol, dateTs) {
       console.log(`[INFO] Backend returned ${expReturned}/${expAvail} expirations. Skipped:`, warns);
     }
 
-    document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
     setStatus('READY', true);
   } catch (e) {
     console.error(e);
@@ -857,7 +896,6 @@ function renderTickerInfo() {
   const chgEl = document.getElementById('infoChange');
   chgEl.textContent = `${chg >= 0 ? '+' : ''}${fmt(chg)} (${chg >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
   chgEl.className = 'val ' + (chg >= 0 ? 'green' : 'red');
-  document.getElementById('infoVolume').textContent = abbr(q.regularMarketVolume);
 }
 
 // Calendar-day diff between today (local) and an exp timestamp (UTC midnight).
@@ -1242,14 +1280,6 @@ document.getElementById('tickerInput').addEventListener('keypress', e => {
   if (e.key === 'Enter') document.getElementById('fetchBtn').click();
 });
 
-document.getElementById('clearBtn').addEventListener('click', () => {
-  if (confirm('Remove all custom tickers?')) {
-    customTickers = [];
-    localStorage.setItem(CUSTOM_KEY, JSON.stringify(customTickers));
-    renderUniverseChips();
-  }
-});
-
 document.querySelectorAll('.tab').forEach(t => {
   t.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
@@ -1283,6 +1313,15 @@ document.getElementById('hideDeadToggle').addEventListener('click', () => {
   window.HIDE_DEAD = !window.HIDE_DEAD;
   document.getElementById('hideDeadToggle').classList.toggle('on', window.HIDE_DEAD);
   if (state.chain) renderTables();
+});
+
+// Filters disclosure — show/hide the numeric filter group
+document.getElementById('filterToggle').addEventListener('click', () => {
+  const btn = document.getElementById('filterToggle');
+  const group = document.getElementById('numericFilters');
+  const open = btn.getAttribute('aria-expanded') === 'true';
+  btn.setAttribute('aria-expanded', open ? 'false' : 'true');
+  group.hidden = open;
 });
 
 // init
