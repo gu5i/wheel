@@ -647,35 +647,32 @@
     <div class="numeric-filters" id="numericFilters" hidden>
       <div class="field">
         <label>Min DTE</label>
-        <input type="number" id="minDTE" value="0" min="0" />
+        <input type="number" id="minDTE" value="" min="0" placeholder="0" />
       </div>
       <div class="field">
         <label>Max DTE</label>
-        <input type="number" id="maxDTE" value="90" min="0" />
+        <input type="number" id="maxDTE" value="" min="0" placeholder="—" />
       </div>
       <div class="field">
         <label>Min Volume</label>
-        <input type="number" id="minVol" value="0" min="0" />
+        <input type="number" id="minVol" value="" min="0" placeholder="0" />
       </div>
       <div class="field">
         <label>Min OI</label>
-        <input type="number" id="minOI" value="0" min="0" />
+        <input type="number" id="minOI" value="" min="0" placeholder="0" />
       </div>
       <div class="field">
         <label>Max Δ from spot %</label>
-        <input type="number" id="maxDist" value="100" min="0" />
+        <input type="number" id="maxDist" value="" min="0" placeholder="—" />
       </div>
-    </div>
-    <div class="field">
-      <label style="margin-right:4px;">Show All</label>
-      <div class="toggle" id="showAllToggle"></div>
     </div>
     <div class="field">
       <label style="margin-right:4px;">Hide Dead</label>
       <div class="toggle" id="hideDeadToggle"></div>
     </div>
-    <div class="field" style="margin-left:auto;color:var(--muted);font-size:10px;">
-      <span id="filterModeLabel">Showing top 50 by composite score</span>
+    <div class="field">
+      <label style="margin-right:4px;">Hide Stale</label>
+      <div class="toggle" id="hideStaleToggle"></div>
     </div>
   </div>
 
@@ -988,6 +985,9 @@ function scoreContract(c, spot, side) {
   const dte = Math.max(0.5, calendarDte(c.expiration));
   
   const mid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
+  // True bid/ask midpoint with no fallback — zero on plans without NBBO,
+  // populates automatically if the data tier ever serves underlying quotes.
+  const trueMid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : 0;
   const hasPrice = mid > 0;
 
   // Annualized yield (used internally for scoring — needs to be DTE-comparable)
@@ -1038,6 +1038,7 @@ function scoreContract(c, spot, side) {
     bid: c.bid,
     ask: c.ask,
     mid,
+    trueMid,
     last: c.lastPrice,
     volume: c.volume || 0,
     oi: c.openInterest || 0,
@@ -1079,13 +1080,14 @@ function composite(rows) {
 }
 
 function filterRows(rows) {
-  // Hide Dead applies regardless of Show All — it's about tradeability, not the numeric filters.
-  if (window.HIDE_DEAD) rows = rows.filter(r => r.freshness !== 'dead');
-  if (window.SHOW_ALL) return rows;  // bypass the numeric filters
-  const minDTE = +document.getElementById('minDTE').value || 0;
-  const maxDTE = +document.getElementById('maxDTE').value || 9999;
-  const minVol = +document.getElementById('minVol').value || 0;
-  const minOI = +document.getElementById('minOI').value || 0;
+  // Freshness toggles apply independently of numeric filters.
+  if (window.HIDE_DEAD)  rows = rows.filter(r => r.freshness !== 'dead');
+  if (window.HIDE_STALE) rows = rows.filter(r => r.freshness !== 'stale');
+  // Numeric filters: empty input -> no constraint (0 for mins, 9999 for maxes).
+  const minDTE  = +document.getElementById('minDTE').value  || 0;
+  const maxDTE  = +document.getElementById('maxDTE').value  || 9999;
+  const minVol  = +document.getElementById('minVol').value  || 0;
+  const minOI   = +document.getElementById('minOI').value   || 0;
   const maxDist = +document.getElementById('maxDist').value || 9999;
   return rows.filter(r =>
     r.dte >= minDTE && r.dte <= maxDTE &&
@@ -1134,13 +1136,12 @@ function renderTables() {
 function renderTable(side, rows) {
   const filtered = filterRows(rows);
   const sorted = sortRows(filtered, state.sort);
-  const limit = window.SHOW_ALL ? sorted.length : 50;
-  const top = sorted.slice(0, limit);
+  const top = sorted;   // no cap — show everything that passed filters
   const container = document.getElementById(side + 'Container');
 
   // Visible diagnostics
   const diagBar = `<div style="padding:8px 16px;background:var(--panel-2);font-size:10px;color:var(--muted);letter-spacing:0.05em;">
-    ${state.chain[side].length} contracts in chain → ${rows.length} scored → ${filtered.length} after filters → showing top ${Math.min(top.length, 50)}
+    ${state.chain[side].length} contracts in chain → ${rows.length} scored → ${filtered.length} after filters → showing ${top.length}
   </div>`;
 
   if (!top.length) {
@@ -1156,9 +1157,10 @@ function renderTable(side, rows) {
     { k: 'score', l: 'Score' },
     { k: 'strike', l: 'Strike' },
     { k: 'distPct', l: '% OTM' },
-    { k: 'mid', l: 'Mid' },
+    { k: 'mid', l: 'Last' },
     { k: 'bid', l: 'Bid' },
     { k: 'ask', l: 'Ask' },
+    { k: 'trueMid', l: 'Mid' },
     { k: 'totalReturn', l: 'Return %' },
     { k: 'yieldPerDay', l: 'Yield/Day %' },
     { k: 'delta', l: 'Delta' },
@@ -1207,6 +1209,7 @@ Total: ${(r.score||0).toFixed(1)}">${(r.score||0).toFixed(0)}</span></td>
       <td><strong>$${fmt(r.mid)}</strong></td>
       <td>$${fmt(r.bid)}</td>
       <td>$${fmt(r.ask)}</td>
+      <td>$${fmt(r.trueMid)}</td>
       <td style="color:var(--accent)"><strong>${r.totalReturn.toFixed(2)}%</strong></td>
       <td style="color:var(--accent)">${r.yieldPerDay.toFixed(3)}%</td>
       <td>${r.delta.toFixed(2)}</td>
@@ -1296,22 +1299,19 @@ document.querySelectorAll('.tab').forEach(t => {
   });
 });
 
-// Show All toggle
-window.SHOW_ALL = false;
-document.getElementById('showAllToggle').addEventListener('click', () => {
-  window.SHOW_ALL = !window.SHOW_ALL;
-  document.getElementById('showAllToggle').classList.toggle('on', window.SHOW_ALL);
-  document.getElementById('filterModeLabel').textContent = window.SHOW_ALL
-    ? 'SHOWING ALL CONTRACTS — filters ignored'
-    : 'Showing top 50 by composite score';
-  if (state.chain) renderTables();
-});
-
 // Hide Dead toggle — drops contracts whose last trade is 5+ days old (or never traded)
 window.HIDE_DEAD = false;
 document.getElementById('hideDeadToggle').addEventListener('click', () => {
   window.HIDE_DEAD = !window.HIDE_DEAD;
   document.getElementById('hideDeadToggle').classList.toggle('on', window.HIDE_DEAD);
+  if (state.chain) renderTables();
+});
+
+// Hide Stale toggle — drops contracts whose last trade is 1–5 days old
+window.HIDE_STALE = false;
+document.getElementById('hideStaleToggle').addEventListener('click', () => {
+  window.HIDE_STALE = !window.HIDE_STALE;
+  document.getElementById('hideStaleToggle').classList.toggle('on', window.HIDE_STALE);
   if (state.chain) renderTables();
 });
 
