@@ -163,6 +163,19 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
     ctype = details.get("contract_type", "")  # "call" or "put"
     underlying_price = _safe_float(c.get("underlying_asset", {}).get("price"))
 
+    # Trade recency. The chain snapshot's last_trade carries sip_timestamp in
+    # NANOSECONDS. Convert to a unix-seconds ts and an age in days so the
+    # frontend can flag stale/dead prices. A contract with no real trade
+    # (price 0 / no timestamp) is marked hasRealTrade=False.
+    last_trade_ns = trade.get("sip_timestamp") or trade.get("t") or 0
+    last_trade_ts = int(last_trade_ns / 1_000_000_000) if last_trade_ns else 0
+    has_real_trade = bool(last > 0 and last_trade_ts > 0)
+    if last_trade_ts > 0:
+        age_seconds = max(0.0, datetime.now(timezone.utc).timestamp() - last_trade_ts)
+        trade_age_days = round(age_seconds / 86400.0, 2)
+    else:
+        trade_age_days = None
+
     # day OHLC — available on Starter tier even without quotes/trades
     day_close = _safe_float(day.get("close"))
     day_open = _safe_float(day.get("open"))
@@ -192,6 +205,9 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
         "fallbackPrice": fallback_price,
         "volume": _safe_int(day.get("volume")),
         "openInterest": _safe_int(c.get("open_interest")),
+        "lastTradeTs": last_trade_ts,
+        "tradeAgeDays": trade_age_days,
+        "hasRealTrade": has_real_trade,
         "impliedVolatility": _safe_float(c.get("implied_volatility")),
         "delta": _safe_float(greeks.get("delta")),
         "gamma": _safe_float(greeks.get("gamma")),
