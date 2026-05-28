@@ -159,9 +159,23 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
     strike = _safe_float(details.get("strike_price"))
     bid = _safe_float(quote.get("bid"))
     ask = _safe_float(quote.get("ask"))
+    bid_size = _safe_int(quote.get("bid_size"))
+    ask_size = _safe_int(quote.get("ask_size"))
     last = _safe_float(trade.get("price"))
     ctype = details.get("contract_type", "")  # "call" or "put"
     underlying_price = _safe_float(c.get("underlying_asset", {}).get("price"))
+
+    # Last-trade timestamp — field name varies across Massive responses; try all known keys.
+    last_trade_ts = 0
+    for k in ("sip_timestamp", "participant_timestamp", "t", "timestamp", "last_updated"):
+        if k in trade:
+            last_trade_ts = _ts_to_unix_seconds(trade.get(k))
+            if last_trade_ts:
+                break
+    # Age of the last trade in days (0 if unknown). >1 means it hasn't traded since
+    # at least the prior session — a real staleness signal the badge can use.
+    now_s = time.time()
+    trade_age_days = round((now_s - last_trade_ts) / 86400, 2) if last_trade_ts else None
 
     # day OHLC — available on Starter tier even without quotes/trades
     day_close = _safe_float(day.get("close"))
@@ -183,7 +197,12 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
         "strike": strike,
         "bid": bid,
         "ask": ask,
+        "bidSize": bid_size,
+        "askSize": ask_size,
         "lastPrice": last or day_close,  # use day close if no live trade
+        "lastTradeTs": last_trade_ts,     # unix seconds of last trade (0 if unknown)
+        "tradeAgeDays": trade_age_days,   # age of last trade in days (None if unknown)
+        "hasRealTrade": bool(last),       # True if an actual last_trade.price came back
         "dayClose": day_close,
         "dayOpen": day_open,
         "dayHigh": day_high,
@@ -206,6 +225,22 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
 def _exp_to_ts(date_str: str) -> int:
     """'YYYY-MM-DD' -> unix seconds at UTC midnight."""
     return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+
+
+def _ts_to_unix_seconds(v) -> int:
+    """Massive timestamps come in ns/us/ms/s depending on field; normalize to unix seconds.
+    Returns 0 if missing/unparseable."""
+    n = _safe_float(v)
+    if not n:
+        return 0
+    # Heuristic by magnitude: ns ~1e18, us ~1e15, ms ~1e12, s ~1e9 (for 2020s dates)
+    if n > 1e17:      # nanoseconds
+        return int(n / 1e9)
+    if n > 1e14:      # microseconds
+        return int(n / 1e6)
+    if n > 1e11:      # milliseconds
+        return int(n / 1e3)
+    return int(n)     # already seconds
 
 
 # ---- Endpoints -------------------------------------------------------------
