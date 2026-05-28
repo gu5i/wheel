@@ -464,6 +464,9 @@
   .badge.itm { background: rgba(255,107,53,0.15); color: var(--accent-2); border-color: rgba(255,107,53,0.3); }
   .badge.otm { background: rgba(74,222,128,0.1); color: var(--green); border-color: rgba(74,222,128,0.3); }
   .badge.nq { background: rgba(107,107,107,0.15); color: var(--muted); border-color: rgba(107,107,107,0.3); }
+  .badge.src-quote { background: rgba(74,222,128,0.15); color: var(--green); border-color: rgba(74,222,128,0.35); }
+  .badge.src-trade { background: rgba(96,165,250,0.12); color: var(--blue); border-color: rgba(96,165,250,0.3); }
+  .badge.src-close { background: rgba(251,191,36,0.12); color: var(--yellow); border-color: rgba(251,191,36,0.3); }
   tbody tr.no-quote { opacity: 0.45; }
   tbody tr.no-quote:hover { opacity: 0.8; }
 
@@ -660,7 +663,7 @@
   </div>
 
   <div class="footnote">
-    Data: Massive (15-min delayed) · Real greeks &amp; IV from Massive · Score: 40% yield · 30% delta-fit (target |0.25|) · 20% DTE-fit (21–45d) · 10% liquidity. Hover Score for breakdown.
+    Data: Massive (15-min delayed) · Real greeks &amp; IV from Massive · Score: 40% yield · 30% delta-fit (target |0.25|) · 20% DTE-fit (21–45d) · 10% liquidity, then ×liquidity-gate for thin/stale prices. Price source: <span style="color:var(--green)">QUOTE</span>=live bid/ask · <span style="color:var(--blue)">LAST</span>=last trade · <span style="color:var(--yellow)">CLOSE</span>=day close (verify in broker). Hover Score for breakdown.
   </div>
 
 </main>
@@ -905,6 +908,16 @@ const SCORE_CONFIG = {
   delta: { target: 0.25, sigma: 0.10 },           // gaussian centered on 0.25
   yieldAnchors: [0, 10, 20, 30, 50],              // % annualized -> 0, 25, 50, 75, 100
   yieldScores:  [0, 25, 50, 75, 100],
+  // Liquidity gate: without real-time bid/ask, price reliability depends on how
+  // actively a contract trades. Thin contracts have stale "last trade" prices that
+  // inflate yield. This gate multiplies the FINAL score down for illiquid contracts
+  // so they can't dominate the ranking on a fictional premium.
+  // gate = clamp( (volume + OI/10) / fullCredit, floor, 1.0 )
+  liquidityGate: {
+    fullCredit: 50,   // volume-equivalent at/above which a contract is fully trusted (gate=1.0)
+    floor: 0.25,      // most a thin contract can be penalized to (never fully zeroed if it has a price)
+    oiWeight: 0.1,    // open interest counts at 10% of volume toward the gate
+  },
 };
 
 // Linear interpolation against piecewise anchors.
@@ -943,12 +956,31 @@ function scoreLiquidity(oi, vol) {
   return Math.min(100, ((oi || 0) + (vol || 0) * 2) / 5);
 }
 
+// Liquidity gate (0..1 multiplier on the final score). Penalizes contracts whose
+// price we can't trust because they trade thinly. With real bid/ask (Advanced tier)
+// this matters less, but with last-trade/day-close pricing it's essential to keep
+// stale thin contracts from topping the ranking on a fictional yield.
+function liquidityGate(oi, vol, hasLiveQuote) {
+  if (hasLiveQuote) return 1.0;  // real bid/ask = price is trustworthy regardless of volume
+  const g = SCORE_CONFIG.liquidityGate;
+  const liqScore = (vol || 0) + (oi || 0) * g.oiWeight;
+  const raw = liqScore / g.fullCredit;
+  return Math.max(g.floor, Math.min(1.0, raw));
+}
+
 function scoreContract(c, spot, side) {
   if (!c.strike) return null;
   const dte = Math.max(0.5, calendarDte(c.expiration));
-  
-  const mid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
+
+  // Price source priority: real bid/ask mid (best) -> last trade -> day close (worst).
+  // hasLiveQuote tells us whether the price is a true tradeable quote or a fallback.
+  const hasLiveQuote = (c.bid > 0 && c.ask > 0);
+  const mid = hasLiveQuote ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
   const hasPrice = mid > 0;
+  // priceSource: 'quote' (bid/ask), 'trade' (last trade), 'close' (day close), or 'none'
+  let priceSource = 'none';
+  if (hasLiveQuote) priceSource = 'quote';
+  else if (c.lastPrice > 0) priceSource = (c.dayClose > 0 && c.lastPrice === c.dayClose) ? 'close' : 'trade';
 
   // Annualized yield (used internally for scoring — needs to be DTE-comparable)
   const denom = side === 'put' ? c.strike : spot;
@@ -986,6 +1018,8 @@ function scoreContract(c, spot, side) {
     itm: c.inTheMoney,
     side,
     hasPrice,
+    hasLiveQuote,
+    priceSource,
   };
 }
 
@@ -997,14 +1031,21 @@ function composite(rows) {
     const sD = scoreDelta(Math.abs(r.delta));
     const sT = scoreDte(r.dte);
     const sL = scoreLiquidity(r.oi, r.volume);
-    const score = w.yield * sY + w.delta * sD + w.dte * sT + w.liquidity * sL;
+    const rawScore = w.yield * sY + w.delta * sD + w.dte * sT + w.liquidity * sL;
+    // Liquidity gate: scale down when price isn't from a live quote and the
+    // contract trades thinly (stale price = untrustworthy yield).
+    const gate = liquidityGate(r.oi, r.volume, r.hasLiveQuote);
+    const score = rawScore * gate;
     r.scoreBreakdown = {
       sYield: sY.toFixed(0),
       sDelta: sD.toFixed(0),
       sDte: sT.toFixed(0),
       sLiq: sL.toFixed(0),
       wYield: w.yield, wDelta: w.delta, wDte: w.dte, wLiq: w.liquidity,
+      gate: gate.toFixed(2),
+      rawScore: rawScore.toFixed(1),
     };
+    r.gate = gate;
     r.score = r.hasPrice ? score : 0; // no quote = no score
   });
   return rows;
@@ -1112,18 +1153,26 @@ function renderTable(side, rows) {
     const noQuote = !(r.mid > 0);
     const noQuoteCls = noQuote ? ' no-quote' : '';
     const itmBadge = r.itm ? '<span class="badge itm">ITM</span>' : '<span class="badge otm">OTM</span>';
-    const noQuoteBadge = noQuote ? ' <span class="badge nq">NO BID</span>' : '';
+    const noQuoteBadge = noQuote ? ' <span class="badge nq">NO PRICE</span>' : '';
+    // Price-source badge: shows where MID came from so you know how much to trust it
+    let srcBadge = '';
+    if (r.priceSource === 'quote') srcBadge = ' <span class="badge src-quote" title="Price from live bid/ask — trustworthy">QUOTE</span>';
+    else if (r.priceSource === 'trade') srcBadge = ' <span class="badge src-trade" title="Price from last trade (15-min delayed) — fair on liquid strikes">LAST</span>';
+    else if (r.priceSource === 'close') srcBadge = ' <span class="badge src-close" title="Price from day close — may be stale, verify in broker">CLOSE</span>';
+    const gateNote = (r.gate !== undefined && r.gate < 1)
+      ? `\nLiquidity gate:  ×${r.scoreBreakdown?.gate} (thin/stale price → score reduced from ${r.scoreBreakdown?.rawScore})`
+      : '';
     const expDate = new Date(r.expiration * 1000).toLocaleDateString('en-US',{month:'short',day:'numeric', timeZone: 'UTC'});
     html += `<tr class="${itmCls}${noQuoteCls}">
       <td class="ticker-cell">
-        ${itmBadge}${noQuoteBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
+        ${itmBadge}${srcBadge}${noQuoteBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
         <span class="sub">${r.contractSymbol}</span>
       </td>
       <td><span class="score ${band}" title="Score = weighted average:
 Yield (40%):     ${r.scoreBreakdown?.sYield || 0}/100  → ${(r.scoreBreakdown?.sYield * r.scoreBreakdown?.wYield).toFixed(1)}
 Delta-fit (30%): ${r.scoreBreakdown?.sDelta || 0}/100  → ${(r.scoreBreakdown?.sDelta * r.scoreBreakdown?.wDelta).toFixed(1)}
 DTE-fit (20%):   ${r.scoreBreakdown?.sDte || 0}/100  → ${(r.scoreBreakdown?.sDte * r.scoreBreakdown?.wDte).toFixed(1)}
-Liquidity (10%): ${r.scoreBreakdown?.sLiq || 0}/100  → ${(r.scoreBreakdown?.sLiq * r.scoreBreakdown?.wLiq).toFixed(1)}
+Liquidity (10%): ${r.scoreBreakdown?.sLiq || 0}/100  → ${(r.scoreBreakdown?.sLiq * r.scoreBreakdown?.wLiq).toFixed(1)}${gateNote}
 Total: ${(r.score||0).toFixed(1)}">${(r.score||0).toFixed(0)}</span></td>
       <td>$${fmt(r.strike)}</td>
       <td style="color:${r.distPct >= 0 ? 'var(--green)' : 'var(--accent-2)'}">${r.distPct.toFixed(1)}%</td>
