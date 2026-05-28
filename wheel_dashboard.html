@@ -595,10 +595,6 @@
       <span class="val" id="infoBidAsk">—</span>
     </div>
     <div class="info-block">
-      <span class="lbl">52w Range</span>
-      <span class="val" id="infoRange">—</span>
-    </div>
-    <div class="info-block">
       <span class="lbl">Volume</span>
       <span class="val" id="infoVolume">—</span>
     </div>
@@ -664,7 +660,7 @@
   </div>
 
   <div class="footnote">
-    Data: Polygon.io (15-min delayed) · Real greeks &amp; IV from Polygon · Score: 40% yield · 30% delta-fit (target |0.25|) · 20% DTE-fit (21–45d) · 10% liquidity. Hover Score for breakdown.
+    Data: Massive (15-min delayed) · Real greeks &amp; IV from Massive · Score: 40% yield · 30% delta-fit (target |0.25|) · 20% DTE-fit (21–45d) · 10% liquidity. Hover Score for breakdown.
   </div>
 
 </main>
@@ -722,7 +718,7 @@ async function fetchBackend(symbol) {
   return resp.json();
 }
 
-// Polygon ships real greeks + IV, so no Black-Scholes needed.
+// Massive ships real greeks + IV, so no Black-Scholes needed.
 // Delta is already on each contract from the backend. This is a no-op kept
 // for call-site compatibility (and to zero out any missing greeks safely).
 function enrichDelta(contracts, spot, isCall) {
@@ -859,7 +855,6 @@ function renderTickerInfo() {
   chgEl.textContent = `${chg >= 0 ? '+' : ''}${fmt(chg)} (${chg >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
   chgEl.className = 'val ' + (chg >= 0 ? 'green' : 'red');
   document.getElementById('infoBidAsk').textContent = `${fmt(q.bid)} / ${fmt(q.ask)}`;
-  document.getElementById('infoRange').textContent = `${fmt(q.fiftyTwoWeekLow)} – ${fmt(q.fiftyTwoWeekHigh)}`;
   document.getElementById('infoVolume').textContent = abbr(q.regularMarketVolume);
 }
 
