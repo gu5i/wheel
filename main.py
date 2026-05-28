@@ -111,7 +111,6 @@ def _spot_price(symbol: str) -> float:
 def _underlying_quote(symbol: str) -> dict:
     """Build the quote dict the frontend expects, from Polygon snapshot."""
     price = change = change_pct = bid = ask = 0.0
-    fifty_low = fifty_high = 0.0
     volume = 0
     try:
         data = _get(f"{BASE}/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")
@@ -144,8 +143,6 @@ def _underlying_quote(symbol: str) -> dict:
         "regularMarketChangePercent": change_pct,
         "bid": bid,
         "ask": ask,
-        "fiftyTwoWeekLow": fifty_low,    # Polygon snapshot doesn't include 52w; left 0
-        "fiftyTwoWeekHigh": fifty_high,  # could add via /v2/aggs if wanted
         "regularMarketVolume": volume,
         "shortName": symbol,
     }
@@ -166,6 +163,17 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
     ctype = details.get("contract_type", "")  # "call" or "put"
     underlying_price = _safe_float(c.get("underlying_asset", {}).get("price"))
 
+    # day OHLC — available on Starter tier even without quotes/trades
+    day_close = _safe_float(day.get("close"))
+    day_open = _safe_float(day.get("open"))
+    day_high = _safe_float(day.get("high"))
+    day_low = _safe_float(day.get("low"))
+    day_vwap = _safe_float(day.get("vwap"))
+
+    # Price fallback chain: last trade -> day close -> day vwap
+    # (Starter tier lacks live bid/ask, so day.close is our best real price)
+    fallback_price = last or day_close or day_vwap
+
     itm = False
     if underlying_price and strike:
         itm = (strike < underlying_price) if ctype == "call" else (strike > underlying_price)
@@ -175,7 +183,13 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
         "strike": strike,
         "bid": bid,
         "ask": ask,
-        "lastPrice": last,
+        "lastPrice": last or day_close,  # use day close if no live trade
+        "dayClose": day_close,
+        "dayOpen": day_open,
+        "dayHigh": day_high,
+        "dayLow": day_low,
+        "dayVwap": day_vwap,
+        "fallbackPrice": fallback_price,
         "volume": _safe_int(day.get("volume")),
         "openInterest": _safe_int(c.get("open_interest")),
         "impliedVolatility": _safe_float(c.get("implied_volatility")),
