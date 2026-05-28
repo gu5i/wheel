@@ -594,11 +594,7 @@
       <span class="val" id="infoChange">—</span>
     </div>
     <div class="info-block">
-      <span class="lbl">Bid / Ask</span>
-      <span class="val" id="infoBidAsk">—</span>
-    </div>
-    <div class="info-block">
-      <span class="lbl">Volume</span>
+      <span class="lbl">Prev Vol</span>
       <span class="val" id="infoVolume">—</span>
     </div>
   </div>
@@ -861,7 +857,6 @@ function renderTickerInfo() {
   const chgEl = document.getElementById('infoChange');
   chgEl.textContent = `${chg >= 0 ? '+' : ''}${fmt(chg)} (${chg >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
   chgEl.className = 'val ' + (chg >= 0 ? 'green' : 'red');
-  document.getElementById('infoBidAsk').textContent = `${fmt(q.bid)} / ${fmt(q.ask)}`;
   document.getElementById('infoVolume').textContent = abbr(q.regularMarketVolume);
 }
 
