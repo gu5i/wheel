@@ -464,10 +464,9 @@
   .badge.itm { background: rgba(255,107,53,0.15); color: var(--accent-2); border-color: rgba(255,107,53,0.3); }
   .badge.otm { background: rgba(74,222,128,0.1); color: var(--green); border-color: rgba(74,222,128,0.3); }
   .badge.nq { background: rgba(107,107,107,0.15); color: var(--muted); border-color: rgba(107,107,107,0.3); }
-  .badge.src-quote { background: rgba(74,222,128,0.15); color: var(--green); border-color: rgba(74,222,128,0.35); }
-  .badge.src-trade { background: rgba(96,165,250,0.12); color: var(--blue); border-color: rgba(96,165,250,0.3); }
-  .badge.src-close { background: rgba(251,191,36,0.12); color: var(--yellow); border-color: rgba(251,191,36,0.3); }
-  .badge.src-stale { background: rgba(248,113,113,0.12); color: var(--red); border-color: rgba(248,113,113,0.3); }
+  .badge.last { background: rgba(96,165,250,0.12); color: var(--blue); border-color: rgba(96,165,250,0.35); }
+  .badge.stale { background: rgba(251,191,36,0.12); color: var(--yellow); border-color: rgba(251,191,36,0.35); }
+  .badge.dead { background: rgba(107,107,107,0.2); color: var(--muted); border-color: rgba(107,107,107,0.4); text-decoration: line-through; }
   tbody tr.no-quote { opacity: 0.45; }
   tbody tr.no-quote:hover { opacity: 0.8; }
 
@@ -636,6 +635,10 @@
       <label style="margin-right:4px;">Show All</label>
       <div class="toggle" id="showAllToggle"></div>
     </div>
+    <div class="field">
+      <label style="margin-right:4px;">Hide Dead</label>
+      <div class="toggle" id="hideDeadToggle"></div>
+    </div>
     <div class="field" style="margin-left:auto;color:var(--muted);font-size:10px;">
       <span id="filterModeLabel">Showing top 50 by composite score</span>
     </div>
@@ -664,7 +667,7 @@
   </div>
 
   <div class="footnote">
-    Data: Massive (15-min delayed) · Real greeks &amp; IV. <strong>Scoring auto-adapts to your data tier:</strong> with live bid/ask (Advanced) → 40% yield · 30% delta · 20% DTE · 10% spread-tightness, gated by top-of-book size, priced off the BID. Without quotes ($79) → 45% yield · 35% delta · 20% DTE, gated by volume/OI staleness. Price source: <span style="color:var(--green)">QUOTE</span>=live bid · <span style="color:var(--blue)">LAST</span>=recent trade · <span style="color:var(--red)">STALE</span>=old trade (penalized) · <span style="color:var(--yellow)">CLOSE</span>=day close. Verify in broker. Hover Score for breakdown.
+    Data: Massive (15-min delayed) · Real greeks &amp; IV from Massive · Score: 40% yield · 30% delta-fit (target |0.25|) · 20% DTE-fit (21–45d) · 10% liquidity. Hover Score for breakdown.
   </div>
 
 </main>
@@ -904,40 +907,11 @@ function renderFilters() {
 // These are tunable in SCORE_CONFIG below.
 // ============================================================
 const SCORE_CONFIG = {
-  // Two scoring regimes, auto-selected per contract based on whether a live
-  // bid/ask quote is present in the data:
-  //
-  //   $79 tier (no quotes): price = last trade / day close.
-  //     base = 0.45·yield + 0.35·delta + 0.20·dte
-  //     finalScore = base × stalenessGate   (volume/OI dampens stale prices)
-  //
-  //   $199 tier (live bid/ask): price = the BID (what a seller collects).
-  //     base = 0.40·yield + 0.30·delta + 0.20·dte + 0.10·spread
-  //     finalScore = base × sizeGate        (top-of-book size dampens thin books)
-  //
-  // Volume/OI is used ONCE (the staleness gate) in the $79 path — no double-count.
-  // In the $199 path, real spread + size replace the volume/OI proxy entirely.
-
-  dte:   { lo: 21, hi: 45, halfLife: 14 },        // plateau 21-45, ±14d falloff
-  delta: { target: 0.25, sigma: 0.10 },           // gaussian centered on |0.25|
-  yieldAnchors: [0, 10, 20, 30, 50],              // % annualized -> score
+  weights: { yield: 0.40, delta: 0.30, dte: 0.20, liquidity: 0.10 },
+  dte:   { lo: 21, hi: 45, halfLife: 14 },        // plateau 21-45, ±14d falloff to ~50
+  delta: { target: 0.25, sigma: 0.10 },           // gaussian centered on 0.25
+  yieldAnchors: [0, 10, 20, 30, 50],              // % annualized -> 0, 25, 50, 75, 100
   yieldScores:  [0, 25, 50, 75, 100],
-
-  // $79 path
-  noQuote: {
-    weights: { yield: 0.45, delta: 0.35, dte: 0.20 },
-    gate: {
-      fullCredit: 50, floor: 0.25, oiWeight: 0.1,   // (vol + 0.1·OI)/50
-      recency: { staleAfter: 1.5, hardStale: 7 },   // fresh ≤1.5d; full penalty by 7d
-    },
-  },
-
-  // $199 path
-  liveQuote: {
-    weights: { yield: 0.40, delta: 0.30, dte: 0.20, spread: 0.10 },
-    spread: { tight: 0.02, wide: 0.15 },   // spread/mid: ≤2% =100, ≥15% =0
-    sizeGate: { fullCredit: 10, floor: 0.40 },  // min(bidSize,askSize)/10
-  },
 };
 
 // Linear interpolation against piecewise anchors.
@@ -972,104 +946,59 @@ function scoreDte(dte) {
   return Math.max(0, 100 - (dist / halfLife) * 50);
 }
 
-// ---- Liquidity / price-trust gates --------------------------------------
-
-// $79 path: staleness gate. No spread data, so volume/OI is the only signal
-// of whether the last-trade/close price is recent enough to trust.
-// Now combines two signals: activity (vol/OI) AND actual trade recency (age in days).
-function stalenessGate(oi, vol, tradeAgeDays) {
-  const g = SCORE_CONFIG.noQuote.gate;
-  // Activity component (existing): how much it trades.
-  const liq = (vol || 0) + (oi || 0) * g.oiWeight;
-  const activityGate = Math.max(g.floor, Math.min(1.0, liq / g.fullCredit));
-  // Recency component (new): how long since the last actual trade.
-  // Fresh (≤ staleAfter days) = 1.0; decays linearly to floor by hardStale days.
-  let recencyGate = 1.0;
-  if (typeof tradeAgeDays === 'number') {
-    const { staleAfter, hardStale } = g.recency;
-    if (tradeAgeDays > staleAfter) {
-      const t = Math.min(1, (tradeAgeDays - staleAfter) / (hardStale - staleAfter));
-      recencyGate = 1.0 - t * (1.0 - g.floor);
-    }
-  }
-  // Take the stricter of the two — a contract is only trustworthy if it's BOTH
-  // reasonably active AND has traded recently.
-  return Math.min(activityGate, recencyGate);
-}
-
-// $199 path: spread score (0..100) — tight spread = liquid/tradeable.
-function scoreSpread(bid, ask) {
-  if (!(bid > 0 && ask > 0)) return 0;
-  const mid = (bid + ask) / 2;
-  const rel = (ask - bid) / mid;  // spread as fraction of mid
-  const { tight, wide } = SCORE_CONFIG.liveQuote.spread;
-  if (rel <= tight) return 100;
-  if (rel >= wide) return 0;
-  return 100 * (1 - (rel - tight) / (wide - tight));
-}
-
-// $199 path: size gate — top-of-book depth. Thin books (1-2 contracts resting)
-// get dampened; a real two-sided market trades through cleanly.
-function sizeGate(bidSize, askSize) {
-  const g = SCORE_CONFIG.liveQuote.sizeGate;
-  const depth = Math.min(bidSize || 0, askSize || 0);
-  return Math.max(g.floor, Math.min(1.0, depth / g.fullCredit));
+function scoreLiquidity(oi, vol) {
+  return Math.min(100, ((oi || 0) + (vol || 0) * 2) / 5);
 }
 
 function scoreContract(c, spot, side) {
   if (!c.strike) return null;
   const dte = Math.max(0.5, calendarDte(c.expiration));
+  
+  const mid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
+  const hasPrice = mid > 0;
 
-  const hasLiveQuote = (c.bid > 0 && c.ask > 0);
-
-  // Staleness threshold (calendar days). A trade from this or the prior session is
-  // "fresh"; older than this means the contract hasn't traded recently.
-  const STALE_DAYS = 1.5;
-
-  // PRICE: on $199 a put seller collects the BID, not the mid. Use bid for puts,
-  // bid for calls too (you're selling the call and collecting its bid). On $79,
-  // fall back to last trade / day close.
-  // priceSource: 'quote' | 'trade' (fresh) | 'stale' (old trade) | 'close' (no real trade) | 'none'
-  let price, priceSource;
-  if (hasLiveQuote) {
-    price = c.bid;                 // what you actually collect as a seller
-    priceSource = 'quote';
-  } else if (c.hasRealTrade && c.lastPrice > 0) {
-    price = c.lastPrice;
-    // Use the real trade timestamp/age to decide fresh vs stale, NOT price==close equality.
-    const age = (typeof c.tradeAgeDays === 'number') ? c.tradeAgeDays : null;
-    priceSource = (age !== null && age > STALE_DAYS) ? 'stale' : 'trade';
-  } else if (c.lastPrice > 0) {
-    price = c.lastPrice;           // only a day-close fallback, no actual trade record
-    priceSource = 'close';
-  } else {
-    price = 0;
-    priceSource = 'none';
-  }
-  const hasPrice = price > 0;
-  const mid = hasLiveQuote ? (c.bid + c.ask) / 2 : price;  // mid still shown in table
-
-  // Yield metrics computed off the price a seller actually receives.
+  // Annualized yield (used internally for scoring — needs to be DTE-comparable)
   const denom = side === 'put' ? c.strike : spot;
-  const annYield = hasPrice ? (price / denom) * (365 / dte) * 100 : 0;
-  const totalReturn = hasPrice ? (price / denom) * 100 : 0;
-  const yieldPerDay = hasPrice ? (price / denom) * (1 / dte) * 100 : 0;
+  const annYield = hasPrice ? (mid / denom) * (365 / dte) * 100 : 0;
+  // Total return on collateral for this single trade (no annualization)
+  const totalReturn = hasPrice ? (mid / denom) * 100 : 0;
+  // Per-day yield — honest version of "yield velocity" without the annualization distortion
+  const yieldPerDay = hasPrice ? (mid / denom) * (1 / dte) * 100 : 0;
 
+  // Distance from spot (% OTM positive)
   const distPct = side === 'put'
     ? ((spot - c.strike) / spot) * 100
     : ((c.strike - spot) / spot) * 100;
 
+  const absDelta = Math.abs(c.delta || 0);
   const iv = (c.impliedVolatility || 0) * 100;
+
+  // Price freshness tiers.
+  //   live  -> real bid/ask present (advanced tier only)  -> NO badge
+  //   last  -> no live quote, last trade < 1 day old       -> LAST badge
+  //   stale -> last trade 1 to 5 days old                  -> STALE badge
+  //   dead  -> last trade 5+ days old, or no real trade    -> DEAD badge
+  const hasLiveQuote = c.bid > 0 && c.ask > 0;
+  const ageDays = (typeof c.tradeAgeDays === 'number') ? c.tradeAgeDays : null;
+  let freshness;
+  if (hasLiveQuote) {
+    freshness = 'live';
+  } else if (c.hasRealTrade === false || ageDays === null) {
+    freshness = 'dead';
+  } else if (ageDays >= 5) {
+    freshness = 'dead';
+  } else if (ageDays >= 1) {
+    freshness = 'stale';
+  } else {
+    freshness = 'last';
+  }
 
   return {
     contractSymbol: c.contractSymbol,
     strike: c.strike,
     bid: c.bid,
     ask: c.ask,
-    bidSize: c.bidSize || 0,
-    askSize: c.askSize || 0,
     mid,
-    price,          // the seller-collected price used for scoring
     last: c.lastPrice,
     volume: c.volume || 0,
     oi: c.openInterest || 0,
@@ -1084,56 +1013,36 @@ function scoreContract(c, spot, side) {
     itm: c.inTheMoney,
     side,
     hasPrice,
-    hasLiveQuote,
-    priceSource,
-    tradeAgeDays: (typeof c.tradeAgeDays === 'number') ? c.tradeAgeDays : null,
+    freshness,
+    ageDays,
   };
 }
 
 function composite(rows) {
   if (!rows.length) return rows;
+  const w = SCORE_CONFIG.weights;
   rows.forEach(r => {
     const sY = scoreYield(r.annYield);
     const sD = scoreDelta(Math.abs(r.delta));
     const sT = scoreDte(r.dte);
-
-    let base, gate, sExtra, extraLabel, w;
-    if (r.hasLiveQuote) {
-      // $199 regime: yield + delta + dte + spread, gated by top-of-book size
-      w = SCORE_CONFIG.liveQuote.weights;
-      sExtra = scoreSpread(r.bid, r.ask);
-      extraLabel = 'Spread';
-      base = w.yield * sY + w.delta * sD + w.dte * sT + w.spread * sExtra;
-      gate = sizeGate(r.bidSize, r.askSize);
-    } else {
-      // $79 regime: yield + delta + dte, gated by volume/OI staleness proxy
-      w = SCORE_CONFIG.noQuote.weights;
-      sExtra = null;
-      extraLabel = null;
-      base = w.yield * sY + w.delta * sD + w.dte * sT;
-      gate = stalenessGate(r.oi, r.volume, r.tradeAgeDays);
-    }
-
-    const score = base * gate;
-    r.gate = gate;
+    const sL = scoreLiquidity(r.oi, r.volume);
+    const score = w.yield * sY + w.delta * sD + w.dte * sT + w.liquidity * sL;
     r.scoreBreakdown = {
-      regime: r.hasLiveQuote ? 'live' : 'noquote',
-      sYield: sY.toFixed(0), wYield: w.yield,
-      sDelta: sD.toFixed(0), wDelta: w.delta,
-      sDte: sT.toFixed(0), wDte: w.dte,
-      sExtra: sExtra !== null ? sExtra.toFixed(0) : null,
-      wExtra: w.spread || null,
-      extraLabel,
-      gate: gate.toFixed(2),
-      base: base.toFixed(1),
+      sYield: sY.toFixed(0),
+      sDelta: sD.toFixed(0),
+      sDte: sT.toFixed(0),
+      sLiq: sL.toFixed(0),
+      wYield: w.yield, wDelta: w.delta, wDte: w.dte, wLiq: w.liquidity,
     };
-    r.score = r.hasPrice ? score : 0;
+    r.score = r.hasPrice ? score : 0; // no quote = no score
   });
   return rows;
 }
 
 function filterRows(rows) {
-  if (window.SHOW_ALL) return rows;  // bypass all filters
+  // Hide Dead applies regardless of Show All — it's about tradeability, not the numeric filters.
+  if (window.HIDE_DEAD) rows = rows.filter(r => r.freshness !== 'dead');
+  if (window.SHOW_ALL) return rows;  // bypass the numeric filters
   const minDTE = +document.getElementById('minDTE').value || 0;
   const maxDTE = +document.getElementById('maxDTE').value || 9999;
   const minVol = +document.getElementById('minVol').value || 0;
@@ -1234,38 +1143,26 @@ function renderTable(side, rows) {
     const noQuote = !(r.mid > 0);
     const noQuoteCls = noQuote ? ' no-quote' : '';
     const itmBadge = r.itm ? '<span class="badge itm">ITM</span>' : '<span class="badge otm">OTM</span>';
-    const noQuoteBadge = noQuote ? ' <span class="badge nq">NO PRICE</span>' : '';
-    // Price-source badge: shows where the scored price came from
-    let srcBadge = '';
-    if (r.priceSource === 'quote') srcBadge = ' <span class="badge src-quote" title="Price = live BID (what you collect) — trustworthy">QUOTE</span>';
-    else if (r.priceSource === 'trade') srcBadge = ` <span class="badge src-trade" title="Last trade${r.tradeAgeDays!=null?` ${r.tradeAgeDays}d ago`:''} — recent, fair on liquid strikes. Verify in broker.">LAST</span>`;
-    else if (r.priceSource === 'stale') srcBadge = ` <span class="badge src-stale" title="Last trade${r.tradeAgeDays!=null?` ${r.tradeAgeDays}d ago`:''} — STALE, hasn't traded recently. Score penalized. Verify in broker.">STALE</span>`;
-    else if (r.priceSource === 'close') srcBadge = ' <span class="badge src-close" title="No recent trade record — using day close. May be stale, verify in broker.">CLOSE</span>';
-
-    // Build score tooltip from whichever regime applied
-    const bd = r.scoreBreakdown || {};
-    const pct = w => Math.round((w || 0) * 100);
-    let tip = 'Score (' + (bd.regime === 'live' ? 'live-quote' : 'no-quote') + ' regime):\n';
-    tip += `Yield (${pct(bd.wYield)}%):     ${bd.sYield||0}/100  → ${((bd.sYield||0)*(bd.wYield||0)).toFixed(1)}\n`;
-    tip += `Delta-fit (${pct(bd.wDelta)}%): ${bd.sDelta||0}/100  → ${((bd.sDelta||0)*(bd.wDelta||0)).toFixed(1)}\n`;
-    tip += `DTE-fit (${pct(bd.wDte)}%):   ${bd.sDte||0}/100  → ${((bd.sDte||0)*(bd.wDte||0)).toFixed(1)}\n`;
-    if (bd.sExtra !== null && bd.sExtra !== undefined) {
-      tip += `${bd.extraLabel} (${pct(bd.wExtra)}%):  ${bd.sExtra}/100  → ${((bd.sExtra||0)*(bd.wExtra||0)).toFixed(1)}\n`;
-    }
-    tip += `Base: ${bd.base}\n`;
-    if (r.gate !== undefined && r.gate < 1) {
-      const gateName = bd.regime === 'live' ? 'Size gate (thin book)' : 'Staleness gate (low vol/OI)';
-      tip += `${gateName}: ×${bd.gate}\n`;
-    }
-    tip += `Total: ${(r.score||0).toFixed(1)}`;
-
+    const noQuoteBadge = noQuote ? ' <span class="badge nq">NO BID</span>' : '';
+    const freshBadge = r.freshness === 'last'
+      ? ` <span class="badge last" title="Last trade ${r.ageDays != null ? r.ageDays.toFixed(1) : '<1'}d ago">LAST</span>`
+      : r.freshness === 'stale'
+      ? ` <span class="badge stale" title="Last trade ${r.ageDays != null ? r.ageDays.toFixed(1) : '?'}d ago — price may be off">STALE</span>`
+      : r.freshness === 'dead'
+      ? ` <span class="badge dead" title="${r.ageDays != null ? 'Last trade ' + r.ageDays.toFixed(1) + 'd ago' : 'No real trade'} — price unreliable">DEAD</span>`
+      : '';
     const expDate = new Date(r.expiration * 1000).toLocaleDateString('en-US',{month:'short',day:'numeric', timeZone: 'UTC'});
     html += `<tr class="${itmCls}${noQuoteCls}">
       <td class="ticker-cell">
-        ${itmBadge}${srcBadge}${noQuoteBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
+        ${itmBadge}${noQuoteBadge}${freshBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
         <span class="sub">${r.contractSymbol}</span>
       </td>
-      <td><span class="score ${band}" title="${tip}">${(r.score||0).toFixed(0)}</span></td>
+      <td><span class="score ${band}" title="Score = weighted average:
+Yield (40%):     ${r.scoreBreakdown?.sYield || 0}/100  → ${(r.scoreBreakdown?.sYield * r.scoreBreakdown?.wYield).toFixed(1)}
+Delta-fit (30%): ${r.scoreBreakdown?.sDelta || 0}/100  → ${(r.scoreBreakdown?.sDelta * r.scoreBreakdown?.wDelta).toFixed(1)}
+DTE-fit (20%):   ${r.scoreBreakdown?.sDte || 0}/100  → ${(r.scoreBreakdown?.sDte * r.scoreBreakdown?.wDte).toFixed(1)}
+Liquidity (10%): ${r.scoreBreakdown?.sLiq || 0}/100  → ${(r.scoreBreakdown?.sLiq * r.scoreBreakdown?.wLiq).toFixed(1)}
+Total: ${(r.score||0).toFixed(1)}">${(r.score||0).toFixed(0)}</span></td>
       <td>$${fmt(r.strike)}</td>
       <td style="color:${r.distPct >= 0 ? 'var(--green)' : 'var(--accent-2)'}">${r.distPct.toFixed(1)}%</td>
       <td><strong>$${fmt(r.mid)}</strong></td>
@@ -1376,6 +1273,14 @@ document.getElementById('showAllToggle').addEventListener('click', () => {
   document.getElementById('filterModeLabel').textContent = window.SHOW_ALL
     ? 'SHOWING ALL CONTRACTS — filters ignored'
     : 'Showing top 50 by composite score';
+  if (state.chain) renderTables();
+});
+
+// Hide Dead toggle — drops contracts whose last trade is 5+ days old (or never traded)
+window.HIDE_DEAD = false;
+document.getElementById('hideDeadToggle').addEventListener('click', () => {
+  window.HIDE_DEAD = !window.HIDE_DEAD;
+  document.getElementById('hideDeadToggle').classList.toggle('on', window.HIDE_DEAD);
   if (state.chain) renderTables();
 });
 
