@@ -381,17 +381,6 @@
     outline: none;
   }
   .filter-bar input[type="number"]:focus { border-color: var(--accent); }
-  .filter-bar select {
-    background: var(--bg);
-    border: 1px solid var(--border-hi);
-    color: var(--text);
-    padding: 5px 8px;
-    font-family: inherit;
-    font-size: 11px;
-    outline: none;
-    cursor: pointer;
-  }
-  .filter-bar select:focus { border-color: var(--accent); }
 
   /* Collapsible numeric-filters block (mobile-first ergonomics) */
   .filter-toggle {
@@ -703,30 +692,16 @@
     </button>
     <div class="numeric-filters" id="numericFilters" hidden>
       <div class="field">
-        <label>Strike filter</label>
-        <select id="strikeMode">
-          <option value="off">Off</option>
-          <option value="around">Around spot</option>
-          <option value="range">Strike range</option>
-        </select>
-      </div>
-      <div class="field" id="strikeAroundField" hidden>
         <label>± strikes from spot</label>
-        <input type="number" id="strikeAround" value="" min="1" placeholder="5" />
+        <input type="number" id="strikeAround" value="" min="1" placeholder="—" />
       </div>
-      <div class="field" id="strikeRangeField" hidden>
-        <label>Min $</label>
+      <div class="field">
+        <label>Min</label>
         <input type="number" id="strikeMin" value="" min="0" placeholder="—" step="0.01" />
-        <label style="margin-left:8px;">Max $</label>
+      </div>
+      <div class="field">
+        <label>Max</label>
         <input type="number" id="strikeMax" value="" min="0" placeholder="—" step="0.01" />
-      </div>
-      <div class="field">
-        <label>Min Volume</label>
-        <input type="number" id="minVol" value="" min="0" placeholder="0" />
-      </div>
-      <div class="field">
-        <label>Min OI</label>
-        <input type="number" id="minOI" value="" min="0" placeholder="0" />
       </div>
       <div class="field">
         <label>Max Δ from spot %</label>
@@ -1152,12 +1127,12 @@ function filterRows(rows) {
   if (window.HIDE_DEAD)  rows = rows.filter(r => r.freshness !== 'dead');
   if (window.HIDE_STALE) rows = rows.filter(r => r.freshness !== 'stale');
 
-  // Strike filter — three modes (off / around / range). Around uses RANK
-  // (N closest strikes above and below spot), not dollar distance, so it
-  // adapts to each ticker's strike spacing without re-typing per symbol.
-  const mode = document.getElementById('strikeMode').value;
-  if (mode === 'around') {
-    const n = +document.getElementById('strikeAround').value || 0;
+  // Strike filters — each one applies only if its input is populated.
+  // ± strikes from spot uses RANK (N closest strikes above and below spot),
+  // not dollar distance, so it adapts to each ticker's strike spacing.
+  const aroundRaw = document.getElementById('strikeAround').value;
+  if (aroundRaw !== '') {
+    const n = +aroundRaw;
     const spot = state.underlying?.regularMarketPrice || 0;
     if (n > 0 && spot > 0) {
       const strikes = [...new Set(rows.map(r => r.strike))].sort((a, b) => a - b);
@@ -1166,20 +1141,19 @@ function filterRows(rows) {
       const allowed = new Set([...below, ...above]);
       rows = rows.filter(r => allowed.has(r.strike));
     }
-  } else if (mode === 'range') {
-    const lo = +document.getElementById('strikeMin').value || 0;
-    const hi = +document.getElementById('strikeMax').value || Infinity;
-    rows = rows.filter(r => r.strike >= lo && r.strike <= hi);
   }
+  const minRaw = document.getElementById('strikeMin').value;
+  if (minRaw !== '') rows = rows.filter(r => r.strike >= +minRaw);
+  const maxRaw = document.getElementById('strikeMax').value;
+  if (maxRaw !== '') rows = rows.filter(r => r.strike <= +maxRaw);
 
-  // Remaining numeric filters: empty input -> no constraint.
-  const minVol  = +document.getElementById('minVol').value  || 0;
-  const minOI   = +document.getElementById('minOI').value   || 0;
-  const maxDist = +document.getElementById('maxDist').value || 9999;
-  return rows.filter(r =>
-    r.volume >= minVol && r.oi >= minOI &&
-    Math.abs(r.distPct) <= maxDist
-  );
+  // Max distance from spot (%): empty input -> no constraint
+  const distRaw = document.getElementById('maxDist').value;
+  if (distRaw !== '') {
+    const maxDist = +distRaw;
+    rows = rows.filter(r => Math.abs(r.distPct) <= maxDist);
+  }
+  return rows;
 }
 
 function scoreBand(s) {
@@ -1381,18 +1355,10 @@ document.querySelectorAll('.tab').forEach(t => {
   });
 });
 
-['minVol','minOI','maxDist','strikeAround','strikeMin','strikeMax'].forEach(id => {
+['maxDist','strikeAround','strikeMin','strikeMax'].forEach(id => {
   document.getElementById(id).addEventListener('input', () => {
     if (state.chain) renderTables();
   });
-});
-
-// Strike filter mode — toggles which input row is visible and triggers rerender
-document.getElementById('strikeMode').addEventListener('change', () => {
-  const mode = document.getElementById('strikeMode').value;
-  document.getElementById('strikeAroundField').hidden = (mode !== 'around');
-  document.getElementById('strikeRangeField').hidden  = (mode !== 'range');
-  if (state.chain) renderTables();
 });
 
 // Hide Dead toggle — drops contracts whose last trade is 5+ days old (or never traded)
