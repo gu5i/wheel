@@ -483,12 +483,61 @@
     font-size: 11px;
     min-width: 40px;
     text-align: center;
+    /* Reset native <button> styling */
+    border: none;
+    font-family: inherit;
+    cursor: pointer;
+    transition: outline-color 0.12s;
+    outline: 1px solid transparent;
   }
+  .score:hover, .score.open { outline-color: var(--accent); }
   .score.s5 { background: var(--accent); color: #0a0a0a; }
   .score.s4 { background: rgba(212,255,58,0.5); color: #0a0a0a; }
   .score.s3 { background: rgba(212,255,58,0.25); color: var(--text); }
   .score.s2 { background: rgba(212,255,58,0.1); color: var(--text); }
   .score.s1 { background: var(--panel-2); color: var(--muted); }
+
+  /* Score breakdown popover — opens on tap/click of any score badge */
+  .score-popover {
+    position: fixed;
+    z-index: 200;
+    background: var(--panel);
+    border: 1px solid var(--accent);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    padding: 12px 14px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text);
+    min-width: 260px;
+    line-height: 1.6;
+  }
+  .score-popover h4 {
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    margin-bottom: 8px;
+  }
+  .score-popover .row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 12px;
+    align-items: baseline;
+  }
+  .score-popover .row .lbl { color: var(--muted); }
+  .score-popover .row .sub { color: var(--text); font-variant-numeric: tabular-nums; }
+  .score-popover .row .contrib { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .score-popover .total {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    color: var(--text);
+    font-weight: 700;
+  }
+  .score-popover .total .v { color: var(--accent); font-variant-numeric: tabular-nums; }
 
   .badge {
     display: inline-block;
@@ -979,7 +1028,10 @@ function scoreLiquidity(oi, vol) {
 
 function scoreContract(c, spot, side) {
   if (!c.strike) return null;
-  const dte = Math.max(0.5, calendarDte(c.expiration));
+  // For yield math, floor DTE at 1 day. A 0-DTE position still resolves over
+  // the remaining day, so yield/day equals the trade's total return — not 2x
+  // it (which is what a 0.5-day floor would produce).
+  const dte = Math.max(1, calendarDte(c.expiration));
   
   const mid = (c.bid > 0 && c.ask > 0) ? (c.bid + c.ask) / 2 : (c.lastPrice || 0);
   // True bid/ask midpoint with no fallback — zero on plans without NBBO,
@@ -1065,11 +1117,9 @@ function composite(rows) {
     const sL = scoreLiquidity(r.oi, r.volume);
     const score = w.yield * sY + w.delta * sD + w.dte * sT + w.liquidity * sL;
     r.scoreBreakdown = {
-      sYield: sY.toFixed(0),
-      sDelta: sD.toFixed(0),
-      sDte: sT.toFixed(0),
-      sLiq: sL.toFixed(0),
+      sYield: sY, sDelta: sD, sDte: sT, sLiq: sL,
       wYield: w.yield, wDelta: w.delta, wDte: w.dte, wLiq: w.liquidity,
+      cYield: sY * w.yield, cDelta: sD * w.delta, cDte: sT * w.dte, cLiq: sL * w.liquidity,
     };
     r.score = r.hasPrice ? score : 0; // no quote = no score
   });
@@ -1192,12 +1242,17 @@ function renderTable(side, rows) {
         ${itmBadge}${freshBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
         <span class="sub">${r.contractSymbol}</span>
       </td>
-      <td><span class="score ${band}" title="Score = weighted average:
-Yield (40%):     ${r.scoreBreakdown?.sYield || 0}/100  → ${(r.scoreBreakdown?.sYield * r.scoreBreakdown?.wYield).toFixed(1)}
-Delta-fit (30%): ${r.scoreBreakdown?.sDelta || 0}/100  → ${(r.scoreBreakdown?.sDelta * r.scoreBreakdown?.wDelta).toFixed(1)}
-DTE-fit (20%):   ${r.scoreBreakdown?.sDte || 0}/100  → ${(r.scoreBreakdown?.sDte * r.scoreBreakdown?.wDte).toFixed(1)}
-Liquidity (10%): ${r.scoreBreakdown?.sLiq || 0}/100  → ${(r.scoreBreakdown?.sLiq * r.scoreBreakdown?.wLiq).toFixed(1)}
-Total: ${(r.score||0).toFixed(1)}">${(r.score||0).toFixed(0)}</span></td>
+      <td><button type="button" class="score ${band}" data-score-trigger
+        data-sy="${(r.scoreBreakdown?.sYield ?? 0).toFixed(0)}"
+        data-sd="${(r.scoreBreakdown?.sDelta ?? 0).toFixed(0)}"
+        data-st="${(r.scoreBreakdown?.sDte ?? 0).toFixed(0)}"
+        data-sl="${(r.scoreBreakdown?.sLiq ?? 0).toFixed(0)}"
+        data-cy="${(r.scoreBreakdown?.cYield ?? 0).toFixed(1)}"
+        data-cd="${(r.scoreBreakdown?.cDelta ?? 0).toFixed(1)}"
+        data-ct="${(r.scoreBreakdown?.cDte ?? 0).toFixed(1)}"
+        data-cl="${(r.scoreBreakdown?.cLiq ?? 0).toFixed(1)}"
+        data-total="${(r.score||0).toFixed(1)}"
+      >${(r.score||0).toFixed(0)}</button></td>
       <td>$${fmt(r.strike)}</td>
       <td style="color:${r.distPct >= 0 ? 'var(--green)' : 'var(--accent-2)'}">${r.distPct.toFixed(1)}%</td>
       <td><strong>$${fmt(r.mid)}</strong></td>
@@ -1317,6 +1372,65 @@ document.getElementById('filterToggle').addEventListener('click', () => {
   btn.setAttribute('aria-expanded', open ? 'false' : 'true');
   group.hidden = open;
 });
+
+// Score breakdown popover. Delegated so it survives row re-renders.
+// Tap/click a score badge -> popover with the four sub-scores and weighted contributions.
+// Tap anywhere else, or the same badge again, to close.
+(function () {
+  let pop = null;
+  let openBtn = null;
+
+  function closePopover() {
+    if (pop) { pop.remove(); pop = null; }
+    if (openBtn) { openBtn.classList.remove('open'); openBtn = null; }
+  }
+
+  function openPopover(btn) {
+    closePopover();
+    const d = btn.dataset;
+    pop = document.createElement('div');
+    pop.className = 'score-popover';
+    pop.innerHTML = `
+      <h4>Score breakdown</h4>
+      <div class="row"><span class="lbl">Yield (40%)</span><span class="sub">${d.sy}/100</span><span class="contrib">+${d.cy}</span></div>
+      <div class="row"><span class="lbl">Delta-fit (30%)</span><span class="sub">${d.sd}/100</span><span class="contrib">+${d.cd}</span></div>
+      <div class="row"><span class="lbl">DTE-fit (20%)</span><span class="sub">${d.st}/100</span><span class="contrib">+${d.ct}</span></div>
+      <div class="row"><span class="lbl">Liquidity (10%)</span><span class="sub">${d.sl}/100</span><span class="contrib">+${d.cl}</span></div>
+      <div class="total"><span>Total</span><span class="v">${d.total}</span></div>`;
+    document.body.appendChild(pop);
+
+    // Position: prefer below the badge; flip above if it would clip the viewport.
+    const rect = btn.getBoundingClientRect();
+    const popRect = pop.getBoundingClientRect();
+    const margin = 6;
+    let top = rect.bottom + margin;
+    let left = rect.left;
+    if (top + popRect.height > window.innerHeight - 8) top = rect.top - popRect.height - margin;
+    if (left + popRect.width > window.innerWidth - 8) left = window.innerWidth - popRect.width - 8;
+    if (left < 8) left = 8;
+    pop.style.top = top + 'px';
+    pop.style.left = left + 'px';
+
+    btn.classList.add('open');
+    openBtn = btn;
+  }
+
+  // Delegated handler — works for any current or future score button in the tables.
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-score-trigger]');
+    if (btn) {
+      if (openBtn === btn) { closePopover(); return; }
+      e.stopPropagation();
+      openPopover(btn);
+      return;
+    }
+    if (pop && !e.target.closest('.score-popover')) closePopover();
+  });
+
+  // Close on scroll/resize so the popover doesn't drift off its badge.
+  window.addEventListener('scroll', closePopover, true);
+  window.addEventListener('resize', closePopover);
+})();
 
 // init
 renderUniverseChips();
