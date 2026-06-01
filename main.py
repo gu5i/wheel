@@ -124,6 +124,28 @@ def _prev_agg(symbol: str) -> dict:
     return {}
 
 
+def _options_underlying_price(symbol: str, exp_lo: str, exp_hi: str) -> float:
+    """Spot from the OPTIONS ADVANCED plan.
+
+    Reads `underlying_asset.price` off a 1-contract options chain snapshot. This
+    price travels with the options entitlement, so it's available (and live) on
+    the options plan without any stock-quote subscription. Returns 0.0 if the
+    options plan doesn't serve it, so the caller can fall back to the stock plan.
+    """
+    try:
+        data = _get(
+            f"{BASE}/v3/snapshot/options/{symbol}",
+            {"expiration_date.gte": exp_lo, "expiration_date.lte": exp_hi, "limit": 1},
+        )
+    except HTTPException:
+        return 0.0
+    for c in (data.get("results") or []):
+        price = _safe_float(c.get("underlying_asset", {}).get("price"))
+        if price:
+            return price
+    return 0.0
+
+
 def _underlying_quote(symbol: str) -> dict:
     """Underlying quote for an options-plan account (no stock-quote entitlement).
 
@@ -273,17 +295,29 @@ def chain_all(
     if cached and now_ts - cached[0] < CACHE_TTL_SECONDS:
         return {**cached[1], "_cached": True, "_cache_age_seconds": int(now_ts - cached[0])}
 
+    today = datetime.now(timezone.utc).date()
+    exp_lo = today.isoformat()
+    exp_hi = (today + timedelta(days=max_days)).isoformat()
+
+    # Quote shell (prev close + volume) from the free /prev daily bar — used for
+    # the Day-change baseline and as the spot fallback below.
     quote = _underlying_quote(symbol)
-    spot = quote["regularMarketPrice"]
+    prev_close = _safe_float(quote.get("prevClose"))
+
+    # Spot priority:
+    #   1) OPTIONS ADVANCED plan  -> underlying_asset.price from the options snapshot
+    #   2) FREE STOCK plan        -> /prev daily close (only if 1 doesn't fetch)
+    spot = _options_underlying_price(symbol, exp_lo, exp_hi)
+    spot_source = "options_advanced"
     if not spot:
-        raise HTTPException(404, f"No quote/price data for {symbol}")
+        spot = prev_close
+        spot_source = "stock_prev_close"
+    if not spot:
+        raise HTTPException(404, f"No price data for {symbol} (options underlying and stock /prev both empty)")
 
     # Server-side filters: strike window + expiration window
     low_strike = round(spot * (1 - strike_pct / 100), 2)
     high_strike = round(spot * (1 + strike_pct / 100), 2)
-    today = datetime.now(timezone.utc).date()
-    exp_lo = today.isoformat()
-    exp_hi = (today + timedelta(days=max_days)).isoformat()
 
     params = {
         "strike_price.gte": low_strike,
@@ -325,15 +359,17 @@ def chain_all(
     if not exp_set:
         raise HTTPException(404, f"No options returned for {symbol} in the requested window")
 
-    # The options chain carries the live (15-min delayed) underlying price.
-    # Use it as the real price, and compute Day change vs the /prev close.
-    prev_close = _safe_float(quote.get("prevClose"))
+    # Authoritative spot. The full chain pull also carries underlying_asset.price
+    # (same OPTIONS source) — prefer it if present, else use the spot resolved
+    # above. Day change is computed against the free /prev close when available.
+    final_spot = live_underlying or spot
     if live_underlying:
-        quote["regularMarketPrice"] = live_underlying
-        if prev_close:
-            chg = live_underlying - prev_close
-            quote["regularMarketChange"] = chg
-            quote["regularMarketChangePercent"] = (chg / prev_close * 100) if prev_close else 0.0
+        spot_source = "options_advanced"
+    quote["regularMarketPrice"] = final_spot
+    if prev_close:
+        chg = final_spot - prev_close
+        quote["regularMarketChange"] = chg
+        quote["regularMarketChangePercent"] = (chg / prev_close * 100) if prev_close else 0.0
 
     response = {
         "quote": quote,
@@ -343,6 +379,7 @@ def chain_all(
         "expirationsReturned": len(exp_set),
         "pagesFetched": pages,
         "source": "massive",
+        "spotSource": spot_source,   # "options_advanced" | "stock_prev_close"
     }
     _cache[cache_key] = (now_ts, response)
     return response
