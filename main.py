@@ -27,7 +27,7 @@ import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Wheel Options API (Massive)", version="2.1.0")
+app = FastAPI(title="Wheel Options API (Massive)", version="2.2.0")
 
 allowed = os.getenv("ALLOWED_ORIGIN", "*")
 app.add_middleware(
@@ -108,41 +108,41 @@ def _spot_price(symbol: str) -> float:
     return 0.0
 
 
-def _prev_agg(symbol: str) -> dict:
-    """Previous session's daily bar via /prev (end-of-day, free-tier entitled).
-
-    Returns {} on any failure. Keys of interest: c (close), v (volume),
-    o/h/l (OHLC), vw (vwap).
-    """
-    try:
-        data = _get(f"{BASE}/v2/aggs/ticker/{symbol}/prev")
-        results = data.get("results", []) or []
-        if results:
-            return results[0]
-    except HTTPException:
-        pass
-    return {}
-
-
 def _underlying_quote(symbol: str) -> dict:
-    """Underlying quote for an options-plan account (no stock-quote entitlement).
+    """Build the quote dict the frontend expects, from Massive snapshot."""
+    price = change = change_pct = bid = ask = 0.0
+    volume = 0
+    try:
+        data = _get(f"{BASE}/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")
+        t = data.get("ticker", {})
+        day = t.get("day", {})
+        prev = t.get("prevDay", {})
+        last_trade = t.get("lastTrade", {})
+        last_quote = t.get("lastQuote", {})
 
-    The live stock snapshot/NBBO endpoints return NOT_AUTHORIZED on an
-    options-only plan, so we don't call them. Price baseline + volume come
-    from the free-tier /prev daily bar. The caller (chain_all) overrides
-    `regularMarketPrice` with the live underlying price from the options
-    chain once it's fetched, and recomputes the change against prevClose.
-    """
-    prev = _prev_agg(symbol)
-    prev_close = _safe_float(prev.get("c"))
-    volume = _safe_int(prev.get("v"))
+        price = _safe_float(last_trade.get("p")) or _safe_float(day.get("c")) or _safe_float(prev.get("c"))
+        bid = _safe_float(last_quote.get("p"))  # bid price
+        ask = _safe_float(last_quote.get("P"))  # ask price
+        volume = _safe_int(day.get("v")) or _safe_int(prev.get("v"))
+        change = _safe_float(t.get("todaysChange"))
+        change_pct = _safe_float(t.get("todaysChangePerc"))
+        if not change and price and prev.get("c"):
+            pc = _safe_float(prev.get("c"))
+            change = price - pc
+            change_pct = (change / pc * 100) if pc else 0
+    except HTTPException:
+        price = _spot_price(symbol)
+
+    if bid == 0 and ask == 0 and price > 0:
+        bid = ask = price  # market closed fallback
 
     return {
         "symbol": symbol,
-        "regularMarketPrice": prev_close,   # provisional; overridden with live options price
-        "regularMarketChange": 0.0,
-        "regularMarketChangePercent": 0.0,
-        "prevClose": prev_close,            # kept so caller can compute true change
+        "regularMarketPrice": price,
+        "regularMarketChange": change,
+        "regularMarketChangePercent": change_pct,
+        "bid": bid,
+        "ask": ask,
         "regularMarketVolume": volume,
         "shortName": symbol,
     }
@@ -162,19 +162,6 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
     last = _safe_float(trade.get("price"))
     ctype = details.get("contract_type", "")  # "call" or "put"
     underlying_price = _safe_float(c.get("underlying_asset", {}).get("price"))
-
-    # Trade recency. The chain snapshot's last_trade carries sip_timestamp in
-    # NANOSECONDS. Convert to a unix-seconds ts and an age in days so the
-    # frontend can flag stale/dead prices. A contract with no real trade
-    # (price 0 / no timestamp) is marked hasRealTrade=False.
-    last_trade_ns = trade.get("sip_timestamp") or trade.get("t") or 0
-    last_trade_ts = int(last_trade_ns / 1_000_000_000) if last_trade_ns else 0
-    has_real_trade = bool(last > 0 and last_trade_ts > 0)
-    if last_trade_ts > 0:
-        age_seconds = max(0.0, datetime.now(timezone.utc).timestamp() - last_trade_ts)
-        trade_age_days = round(age_seconds / 86400.0, 2)
-    else:
-        trade_age_days = None
 
     # day OHLC — available on Starter tier even without quotes/trades
     day_close = _safe_float(day.get("close"))
@@ -205,9 +192,6 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
         "fallbackPrice": fallback_price,
         "volume": _safe_int(day.get("volume")),
         "openInterest": _safe_int(c.get("open_interest")),
-        "lastTradeTs": last_trade_ts,
-        "tradeAgeDays": trade_age_days,
-        "hasRealTrade": has_real_trade,
         "impliedVolatility": _safe_float(c.get("implied_volatility")),
         "delta": _safe_float(greeks.get("delta")),
         "gamma": _safe_float(greeks.get("gamma")),
@@ -224,13 +208,30 @@ def _exp_to_ts(date_str: str) -> int:
     return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
 
 
+def _underlying_from_contract(c: dict) -> dict:
+    """Pull the underlying price + freshness that ships inside each options-snapshot
+    contract. This price is governed by the OPTIONS entitlement, so on Options
+    Advanced it should be live — unlike the separate /stocks snapshot endpoint,
+    which needs its own Stocks subscription.
+
+    'timeframe' is Massive's own label ("REAL-TIME" or "DELAYED") — the easiest
+    way to confirm empirically whether the underlying is actually live.
+    """
+    ua = c.get("underlying_asset", {}) or {}
+    return {
+        "price": _safe_float(ua.get("price")),
+        "timeframe": ua.get("timeframe"),       # "REAL-TIME" | "DELAYED" | None
+        "last_updated": ua.get("last_updated"),  # nanosecond timestamp, if present
+    }
+
+
 # ---- Endpoints -------------------------------------------------------------
 
 @app.get("/")
 def root():
     return {
         "service": "Wheel Options API (Massive)",
-        "version": "2.0.0",
+        "version": "2.2.0",
         "key_configured": bool(API_KEY),
         "defaults": {"max_days": DEFAULT_MAX_DAYS, "strike_pct": DEFAULT_STRIKE_PCT},
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
@@ -273,17 +274,36 @@ def chain_all(
     if cached and now_ts - cached[0] < CACHE_TTL_SECONDS:
         return {**cached[1], "_cached": True, "_cache_age_seconds": int(now_ts - cached[0])}
 
+    # Expiration window (independent of price)
+    today = datetime.now(timezone.utc).date()
+    exp_lo = today.isoformat()
+    exp_hi = (today + timedelta(days=max_days)).isoformat()
+
+    # Underlying quote from the STOCKS snapshot. We still use this for the
+    # displayed bid/ask/volume — but the PRICE may be overridden below by the
+    # options-snapshot underlying, which is governed by the Options plan.
     quote = _underlying_quote(symbol)
-    spot = quote["regularMarketPrice"]
+    spot = quote["regularMarketPrice"]  # window anchor; precision not critical (±strike_pct%)
+
+    # No stocks entitlement at all? Discover spot straight from the options
+    # snapshot (every contract carries the underlying price), so the strike
+    # window still works on an Options-only plan.
     if not spot:
-        raise HTTPException(404, f"No quote/price data for {symbol}")
+        disc = _get(
+            f"{BASE}/v3/snapshot/options/{symbol}",
+            {"expiration_date.gte": exp_lo, "expiration_date.lte": exp_hi, "limit": 1},
+        )
+        for c in (disc.get("results") or []):
+            u = _underlying_from_contract(c)
+            if u["price"]:
+                spot = u["price"]
+                break
+        if not spot:
+            raise HTTPException(404, f"No price data for {symbol}")
 
     # Server-side filters: strike window + expiration window
     low_strike = round(spot * (1 - strike_pct / 100), 2)
     high_strike = round(spot * (1 + strike_pct / 100), 2)
-    today = datetime.now(timezone.utc).date()
-    exp_lo = today.isoformat()
-    exp_hi = (today + timedelta(days=max_days)).isoformat()
 
     params = {
         "strike_price.gte": low_strike,
@@ -299,7 +319,11 @@ def chain_all(
     by_exp: dict = {}
     exp_set: set = set()
     pages = 0
-    live_underlying = 0.0   # captured from options chain (underlying_asset.price)
+
+    # Underlying price that travels inside the options snapshot (Options-plan governed)
+    ul_price = 0.0
+    ul_timeframe = None
+    ul_asof = None
 
     while url and pages < MAX_PAGES:
         data = _get(url, params if pages == 0 else None)
@@ -310,13 +334,18 @@ def chain_all(
             ctype = details.get("contract_type")
             if not exp_str or ctype not in ("call", "put"):
                 continue
-            if not live_underlying:
-                live_underlying = _safe_float(c.get("underlying_asset", {}).get("price"))
             ts = _exp_to_ts(exp_str)
             exp_set.add(ts)
             slot = by_exp.setdefault(str(ts), {"calls": [], "puts": []})
             mapped = _map_contract(c, ts)
             (slot["calls"] if ctype == "call" else slot["puts"]).append(mapped)
+
+            if not ul_price:
+                u = _underlying_from_contract(c)
+                if u["price"]:
+                    ul_price = u["price"]
+                    ul_timeframe = u["timeframe"]
+                    ul_asof = u["last_updated"]
 
         url = data.get("next_url")
         params = None  # next_url already carries query params (except apiKey, added by _get)
@@ -325,15 +354,18 @@ def chain_all(
     if not exp_set:
         raise HTTPException(404, f"No options returned for {symbol} in the requested window")
 
-    # The options chain carries the live (15-min delayed) underlying price.
-    # Use it as the real price, and compute Day change vs the /prev close.
-    prev_close = _safe_float(quote.get("prevClose"))
-    if live_underlying:
-        quote["regularMarketPrice"] = live_underlying
-        if prev_close:
-            chg = live_underlying - prev_close
+    # Prefer the options-snapshot underlying over the stocks endpoint. On Options
+    # Advanced this is the live price; check `underlyingTimeframe` to confirm.
+    # Day-change is recomputed against the prev close implied by the stocks quote.
+    price_source = "stocks_snapshot"
+    if ul_price:
+        prev_close = quote["regularMarketPrice"] - quote["regularMarketChange"]
+        quote["regularMarketPrice"] = ul_price
+        if prev_close > 0:
+            chg = ul_price - prev_close
             quote["regularMarketChange"] = chg
-            quote["regularMarketChangePercent"] = (chg / prev_close * 100) if prev_close else 0.0
+            quote["regularMarketChangePercent"] = (chg / prev_close) * 100
+        price_source = "options_snapshot"
 
     response = {
         "quote": quote,
@@ -343,6 +375,9 @@ def chain_all(
         "expirationsReturned": len(exp_set),
         "pagesFetched": pages,
         "source": "massive",
+        "underlyingSource": price_source,      # "options_snapshot" | "stocks_snapshot"
+        "underlyingTimeframe": ul_timeframe,   # "REAL-TIME" | "DELAYED" | None
+        "underlyingAsOf": ul_asof,             # ns timestamp from Massive, if present
     }
     _cache[cache_key] = (now_ts, response)
     return response
