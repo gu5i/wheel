@@ -458,6 +458,10 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
+  /* Flexible spacer column eats leftover width so every real column hugs its
+     content instead of getting stretched apart (fixes the Contract↔Score gap). */
+  th.spacer, td.spacer { width: 100%; padding: 0; cursor: default; }
+  th.spacer:hover { color: var(--muted); }
   tbody tr { transition: background 0.1s; }
   tbody tr:hover { background: rgba(212,255,58,0.03); }
   tbody tr.itm { background: rgba(255,107,53,0.04); }
@@ -1085,6 +1089,7 @@ function scoreContract(c, spot, side) {
     mid,
     trueMid,
     last: c.lastPrice,
+    hasRealTrade: c.hasRealTrade,
     volume: c.volume || 0,
     oi: c.openInterest || 0,
     iv,
@@ -1217,7 +1222,7 @@ function renderTable(side, rows) {
     { k: 'score', l: 'Score' },
     { k: 'strike', l: 'Strike' },
     { k: 'distPct', l: '% OTM' },
-    { k: 'mid', l: 'Last' },
+    { k: 'last', l: 'Last' },
     { k: 'bid', l: 'Bid' },
     { k: 'ask', l: 'Ask' },
     { k: 'trueMid', l: 'Mid' },
@@ -1236,6 +1241,7 @@ function renderTable(side, rows) {
     const sortCls = state.sort.key === h.k ? 'sorted ' + state.sort.dir : '';
     html += `<th class="${sortCls}" data-key="${h.k}">${h.l}</th>`;
   });
+  html += '<th class="spacer" aria-hidden="true"></th>';
   html += '</tr></thead><tbody>';
 
   top.forEach(r => {
@@ -1268,7 +1274,7 @@ function renderTable(side, rows) {
       >${(r.score||0).toFixed(0)}</button></td>
       <td>$${fmt(r.strike)}</td>
       <td style="color:${r.distPct >= 0 ? 'var(--green)' : 'var(--accent-2)'}">${r.distPct.toFixed(1)}%</td>
-      <td><strong>$${fmt(r.mid)}</strong></td>
+      <td><strong>${r.hasRealTrade === false ? '—' : '$' + fmt(r.last)}</strong></td>
       <td>$${fmt(r.bid)}</td>
       <td>$${fmt(r.ask)}</td>
       <td>$${fmt(r.trueMid)}</td>
@@ -1279,14 +1285,15 @@ function renderTable(side, rows) {
       <td>${r.dte}</td>
       <td>${abbr(r.volume)}</td>
       <td>${abbr(r.oi)}</td>
+      <td class="spacer"></td>
     </tr>`;
   });
 
   html += '</tbody></table></div>';
   container.innerHTML = html;
 
-  // attach sort handlers
-  container.querySelectorAll('th').forEach(th => {
+  // attach sort handlers (skip the flexible spacer th, which has no data-key)
+  container.querySelectorAll('th[data-key]').forEach(th => {
     th.addEventListener('click', () => {
       const k = th.dataset.key;
       if (state.sort.key === k) {
