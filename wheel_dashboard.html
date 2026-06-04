@@ -620,9 +620,109 @@
     .brand { justify-content: center; width: 100%; }
     .header-right { justify-content: center; width: 100%; gap: 14px; }
   }
+  /* ===== Login gate ===== */
+  #authGate {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: var(--bg);
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(212,255,58,0.05) 0%, transparent 40%),
+      radial-gradient(circle at 80% 90%, rgba(255,107,53,0.04) 0%, transparent 40%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  #authGate[hidden] { display: none; }
+  .auth-card {
+    width: 100%;
+    max-width: 340px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 28px 26px 26px;
+  }
+  .auth-card .brand { justify-content: flex-start; margin-bottom: 4px; }
+  .auth-card h1 {
+    font-family: 'Fraunces', serif;
+    font-weight: 800;
+    font-size: 26px;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+  .auth-card .tag {
+    font-size: 10px;
+    color: var(--accent);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    display: block;
+    margin: 2px 0 22px;
+  }
+  .auth-card label {
+    display: block;
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 6px;
+  }
+  .auth-card input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border-hi);
+    color: var(--text);
+    padding: 10px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    margin-bottom: 16px;
+    transition: border-color 0.15s;
+  }
+  .auth-card input:focus { border-color: var(--accent); }
+  .auth-card button {
+    width: 100%;
+    background: var(--accent);
+    color: #0a0a0a;
+    border: none;
+    padding: 11px 18px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .auth-card button:hover { background: #e2ff5a; }
+  .auth-error {
+    color: var(--red);
+    font-size: 11px;
+    margin: -6px 0 14px;
+    min-height: 14px;
+  }
+  .auth-lock {
+    cursor: pointer;
+    color: var(--muted);
+    text-decoration: none;
+  }
+  .auth-lock:hover { color: var(--accent); }
 </style>
 </head>
 <body>
+
+<!-- ===== LOGIN GATE ===== -->
+<div id="authGate">
+  <div class="auth-card">
+    <div class="brand"><h1>Wheel<span style="color:var(--accent)">.</span></h1></div>
+    <span class="tag">Options Monitor</span>
+    <label for="authUser">Username</label>
+    <input type="text" id="authUser" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" />
+    <label for="authPass">Password</label>
+    <input type="password" id="authPass" autocomplete="current-password" />
+    <div class="auth-error" id="authError"></div>
+    <button id="authBtn" type="button">Enter</button>
+  </div>
+</div>
 
 <header>
   <div class="brand">
@@ -632,6 +732,7 @@
   <div class="header-right">
     <span class="status-pill"><span class="status-dot" id="statusDot"></span><span id="statusText">READY</span></span>
     <span class="update-pill">Updated <span id="lastUpdate">—</span></span>
+    <span><a class="auth-lock" id="lockBtn" title="Lock the dashboard">Lock</a></span>
   </div>
 </header>
 
@@ -751,6 +852,95 @@
 </main>
 
 <script>
+// ============================================================
+// LOGIN GATE (frontend-only — a "members" screen, NOT real security)
+// ------------------------------------------------------------
+// Anyone technical can bypass this in DevTools, and the backend API has no
+// auth, so this only keeps casual visitors out of the UI. To actually protect
+// the data, add auth on the Render backend (see notes from Claude).
+//
+// To set your own credentials:
+//   1) Pick a username and password.
+//   2) Generate the password's SHA-256 hash — paste this in any browser console:
+//        crypto.subtle.digest('SHA-256', new TextEncoder().encode('YOUR_PASSWORD'))
+//          .then(b => console.log([...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')));
+//   3) Put the username in AUTH.user and the printed hash in AUTH.passHash.
+//
+// Login is  wheel / moneyprinter  (password stored as a SHA-256 hash).
+// Stays logged in across refreshes; only re-prompts once 5 days have passed
+// since the last successful login (or after using the Lock link).
+// ============================================================
+const AUTH = {
+  user: 'wheel',
+  passHash: '2177c7d47dc7e9a3a474bb4fceb2d1d567dd87f0bf5e7d20608d893e6aa92ab4', // SHA-256('moneyprinter')
+  storeKey: 'wheel_authed_at',
+  maxAgeMs: 5 * 24 * 60 * 60 * 1000,   // 5 days
+};
+
+async function _sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+function _unlockUI() {
+  const gate = document.getElementById('authGate');
+  if (gate) gate.hidden = true;
+}
+
+function lockDashboard() {
+  try { localStorage.removeItem(AUTH.storeKey); } catch {}
+  const gate = document.getElementById('authGate');
+  if (gate) gate.hidden = false;
+  const u = document.getElementById('authUser');
+  const p = document.getElementById('authPass');
+  if (p) p.value = '';
+  if (u) { u.value = ''; u.focus(); }
+}
+
+async function _attemptLogin() {
+  const err = document.getElementById('authError');
+  const user = (document.getElementById('authUser').value || '').trim();
+  const pass = document.getElementById('authPass').value || '';
+  let ok = false;
+  try {
+    ok = (user === AUTH.user) && ((await _sha256Hex(pass)) === AUTH.passHash);
+  } catch {
+    // crypto.subtle needs a secure context (https). Fall back is to fail closed.
+    ok = false;
+  }
+  if (ok) {
+    try { localStorage.setItem(AUTH.storeKey, String(Date.now())); } catch {}
+    if (err) err.textContent = '';
+    _unlockUI();
+  } else {
+    if (err) err.textContent = 'Incorrect username or password.';
+    document.getElementById('authPass').value = '';
+    document.getElementById('authPass').focus();
+  }
+}
+
+(function _initAuthGate() {
+  let authed = false;
+  try {
+    const ts = parseInt(localStorage.getItem(AUTH.storeKey) || '', 10);
+    authed = Number.isFinite(ts) && (Date.now() - ts) < AUTH.maxAgeMs;
+  } catch {}
+  if (authed) { _unlockUI(); }
+
+  document.getElementById('authBtn').addEventListener('click', _attemptLogin);
+  ['authUser', 'authPass'].forEach(id => {
+    document.getElementById(id).addEventListener('keypress', e => {
+      if (e.key === 'Enter') _attemptLogin();
+    });
+  });
+  const lockBtn = document.getElementById('lockBtn');
+  if (lockBtn) lockBtn.addEventListener('click', lockDashboard);
+
+  if (!authed) {
+    const u = document.getElementById('authUser');
+    if (u) u.focus();
+  }
+})();
 // ============================================================
 // WHEEL UNIVERSE (from Gus's strategy)
 // ============================================================
