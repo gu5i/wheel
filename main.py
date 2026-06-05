@@ -42,7 +42,7 @@ BASE = "https://api.massive.com"
 
 DEFAULT_MAX_DAYS = 90
 DEFAULT_STRIKE_PCT = 50
-CACHE_TTL_SECONDS = 60
+CACHE_TTL_SECONDS = 15
 MAX_PAGES = 12          # safety cap on pagination (12 * 250 = 3000 contracts)
 _cache: dict = {}
 
@@ -241,6 +241,28 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
     }
 
 
+def _to_unix_seconds(ts) -> int:
+    """Normalize a Massive timestamp to unix SECONDS.
+
+    Massive returns timestamps in nanoseconds, microseconds, milliseconds, or
+    seconds depending on the field, so detect the magnitude before converting.
+    Returns 0 on anything unparseable.
+    """
+    try:
+        v = int(ts)
+    except (TypeError, ValueError):
+        return 0
+    if v <= 0:
+        return 0
+    if v >= 10**17:        # nanoseconds
+        return v // 1_000_000_000
+    if v >= 10**14:        # microseconds
+        return v // 1_000_000
+    if v >= 10**11:        # milliseconds
+        return v // 1_000
+    return v               # already seconds
+
+
 def _exp_to_ts(date_str: str) -> int:
     """'YYYY-MM-DD' -> unix seconds at UTC midnight."""
     return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
@@ -334,6 +356,8 @@ def chain_all(
     exp_set: set = set()
     pages = 0
     live_underlying = 0.0   # captured from options chain (underlying_asset.price)
+    ul_timeframe = None     # "REAL-TIME" | "DELAYED" — Massive's own freshness label
+    ul_asof = 0             # unix seconds of that underlying price (0 if unknown)
 
     while url and pages < MAX_PAGES:
         data = _get(url, params if pages == 0 else None)
@@ -345,7 +369,11 @@ def chain_all(
             if not exp_str or ctype not in ("call", "put"):
                 continue
             if not live_underlying:
-                live_underlying = _safe_float(c.get("underlying_asset", {}).get("price"))
+                ua = c.get("underlying_asset", {}) or {}
+                live_underlying = _safe_float(ua.get("price"))
+                if live_underlying:
+                    ul_timeframe = ua.get("timeframe")
+                    ul_asof = _to_unix_seconds(ua.get("last_updated"))
             ts = _exp_to_ts(exp_str)
             exp_set.add(ts)
             slot = by_exp.setdefault(str(ts), {"calls": [], "puts": []})
@@ -379,7 +407,9 @@ def chain_all(
         "expirationsReturned": len(exp_set),
         "pagesFetched": pages,
         "source": "massive",
-        "spotSource": spot_source,   # "options_advanced" | "stock_prev_close"
+        "spotSource": spot_source,            # "options_advanced" | "stock_prev_close"
+        "underlyingTimeframe": ul_timeframe,  # "REAL-TIME" | "DELAYED" | None
+        "underlyingAsOf": ul_asof,            # unix seconds of the spot price (0 if unknown)
     }
     _cache[cache_key] = (now_ts, response)
     return response
