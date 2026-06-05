@@ -782,6 +782,11 @@
       <span class="lbl">Day Δ</span>
       <span class="val" id="infoChange">—</span>
     </div>
+    <div class="info-block">
+      <span class="lbl">Spot Age</span>
+      <span class="val" id="infoSpotAge">—</span>
+    </div>
+    <button class="ghost" id="refreshBtn" style="margin-left:auto;" title="Refetch spot price and option chain">↻ Refresh Prices</button>
   </div>
 
   <!-- EXPIRATIONS -->
@@ -1016,13 +1021,19 @@ async function loadSymbol(symbol, dateTs) {
   });
 
   try {
-    if (!state.fullData || state.symbol !== symbol) {
+    // A ticker (re)selection has no dateTs -> treat it as "give me fresh data"
+    // and refetch, so re-tapping a ticker actually refreshes the price & score.
+    // An expiration switch passes dateTs and reuses the loaded chain (no refetch).
+    const isExpSwitch = !!dateTs && state.fullData && state.symbol === symbol;
+
+    if (!isExpSwitch) {
+      const prevExp = (state.symbol === symbol) ? state.selectedExpiration : null;
       const result = await fetchBackend(symbol);
       state.fullData = result;
       state.symbol = symbol;
       state.underlying = result.quote;
       state.expirations = result.expirationDates;
-      
+
       // Pick first expiration that actually has contracts (skip empty LEAPs/dead expirations)
       let firstWithData = null;
       for (const ts of result.expirationDates) {
@@ -1032,8 +1043,11 @@ async function loadSymbol(symbol, dateTs) {
           break;
         }
       }
-      state.selectedExpiration = dateTs || firstWithData || result.expirationDates[0];
-    } else if (dateTs) {
+      // On a same-symbol refresh, keep the expiration you were viewing if it
+      // still exists after the refetch; otherwise fall back to first populated.
+      const keepExp = (prevExp && result.expirationDates.includes(prevExp)) ? prevExp : null;
+      state.selectedExpiration = dateTs || keepExp || firstWithData || result.expirationDates[0];
+    } else {
       state.selectedExpiration = dateTs;
     }
 
@@ -1129,6 +1143,30 @@ function renderTickerInfo() {
   const chgEl = document.getElementById('infoChange');
   chgEl.textContent = `${chg >= 0 ? '+' : ''}${fmt(chg)} (${chg >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
   chgEl.className = 'val ' + (chg >= 0 ? 'green' : 'red');
+
+  // Spot freshness: how old is the underlying price, and is Massive flagging it
+  // REAL-TIME or DELAYED. Age is computed live from the timestamp the backend
+  // passed through (underlyingAsOf, unix seconds).
+  const ageEl = document.getElementById('infoSpotAge');
+  const asOf = state.fullData?.underlyingAsOf || 0;
+  const tf = state.fullData?.underlyingTimeframe || '';
+  if (asOf) {
+    const ageSec = Math.max(0, Math.floor(Date.now() / 1000) - asOf);
+    ageEl.textContent = (tf ? tf + ' · ' : '') + fmtAge(ageSec) + ' ago';
+    // Tint amber once the spot is more than ~5 min old, red past ~20 min.
+    ageEl.className = 'val ' + (ageSec > 1200 ? 'red' : (ageSec > 300 ? '' : 'green'));
+  } else {
+    ageEl.textContent = tf || '—';
+    ageEl.className = 'val';
+  }
+}
+
+// Compact "Xs / Xm / Xh Ym" age formatter.
+function fmtAge(sec) {
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm';
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return m ? `${h}h ${m}m` : `${h}h`;
 }
 
 // Calendar-day diff between today (local) and an exp timestamp (UTC midnight).
@@ -1540,6 +1578,13 @@ document.getElementById('fetchBtn').addEventListener('click', () => {
 
 document.getElementById('tickerInput').addEventListener('keypress', e => {
   if (e.key === 'Enter') document.getElementById('fetchBtn').click();
+});
+
+// Refresh Prices — refetch spot + chain for the symbol currently loaded.
+document.getElementById('refreshBtn').addEventListener('click', () => {
+  if (!state.symbol) return;
+  state.fullData = null;          // bypass any client-side reuse, force a fresh pull
+  loadSymbol(state.symbol);       // backend cache is 15s, so this is near-live
 });
 
 document.querySelectorAll('.tab').forEach(t => {
