@@ -302,6 +302,36 @@ def quote(symbol: str):
     return q
 
 
+@app.get("/trades/{contract}")
+def trades(contract: str, limit: int = Query(10, ge=1, le=50)):
+    """Last N trades (time & sales) for one option contract.
+
+    `contract` is the OPRA option ticker, e.g. O:SN260618P00115000.
+    Pulls Massive's options Trades endpoint sorted most-recent-first. Note this
+    is tick-level TRADES (prints), not an order book — US options have no
+    consolidated depth-of-book feed.
+    """
+    _require_key()
+    contract = contract.strip()
+    data = _get(
+        f"{BASE}/v3/trades/{contract}",
+        {"limit": limit, "order": "desc", "sort": "timestamp"},
+    )
+    out = []
+    for t in (data.get("results") or []):
+        ts = _to_unix_seconds(
+            t.get("sip_timestamp") or t.get("participant_timestamp") or t.get("t")
+        )
+        out.append({
+            "price": _safe_float(t.get("price")),
+            "size": _safe_int(t.get("size")),
+            "exchange": _safe_int(t.get("exchange")),
+            "conditions": t.get("conditions") or [],
+            "ts": ts,
+        })
+    return {"contract": contract, "trades": out, "count": len(out)}
+
+
 @app.get("/chain/{symbol}/all")
 def chain_all(
     symbol: str,
