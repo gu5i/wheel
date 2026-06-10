@@ -471,7 +471,9 @@
     font-weight: 700;
     color: var(--text);
     letter-spacing: 0.03em;
+    cursor: pointer;
   }
+  .ticker-cell:hover .sub { color: var(--accent); }
   .ticker-cell .sub {
     display: block;
     font-size: 10px;
@@ -542,6 +544,55 @@
     font-weight: 700;
   }
   .score-popover .total .v { color: var(--accent); font-variant-numeric: tabular-nums; }
+
+  /* Time & sales popover — opens on tap/click of a contract cell */
+  .ts-popover {
+    position: fixed;
+    z-index: 200;
+    background: var(--panel);
+    border: 1px solid var(--accent);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    padding: 12px 14px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text);
+    min-width: 240px;
+    max-width: 340px;
+    line-height: 1.5;
+  }
+  .ts-popover h4 {
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    margin-bottom: 2px;
+  }
+  .ts-popover .sub-h {
+    font-size: 10px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    word-break: break-all;
+  }
+  .ts-popover table { width: 100%; border-collapse: collapse; }
+  .ts-popover th, .ts-popover td {
+    text-align: right;
+    padding: 3px 6px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .ts-popover th:first-child, .ts-popover td:first-child { text-align: left; }
+  .ts-popover th {
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+  }
+  .ts-popover td.px { color: var(--accent); font-weight: 700; }
+  .ts-popover .msg { color: var(--muted); padding: 10px 2px; }
+  .ts-popover .msg.err { color: var(--red); }
 
   .badge {
     display: inline-block;
@@ -1485,7 +1536,7 @@ function renderTable(side, rows) {
       : '';
     const expDate = new Date(r.expiration * 1000).toLocaleDateString('en-US',{month:'short',day:'numeric', timeZone: 'UTC'});
     html += `<tr class="${itmCls}">
-      <td class="ticker-cell">
+      <td class="ticker-cell" data-trades-trigger data-contract="${r.contractSymbol}" title="Click for last 10 trades (time & sales)">
         ${itmBadge}${freshBadge} ${state.symbol} ${expDate} ${side === 'puts' ? 'P' : 'C'}
         <span class="sub">${r.contractSymbol}</span>
       </td>
@@ -1685,6 +1736,97 @@ document.getElementById('filterToggle').addEventListener('click', () => {
   // Close on scroll/resize so the popover doesn't drift off its badge.
   window.addEventListener('scroll', closePopover, true);
   window.addEventListener('resize', closePopover);
+})();
+
+// ============================================================
+// TIME & SALES POPOVER — last trades for a contract (click the contract cell)
+// ============================================================
+async function fetchTrades(contract, limit = 10) {
+  const base = getBackendBase();
+  if (!base) throw new Error('No backend URL configured.');
+  const url = `${base}/trades/${encodeURIComponent(contract)}?limit=${limit}`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    let msg = `HTTP ${resp.status}`;
+    try { const j = await resp.json(); if (j.detail) msg += ` — ${j.detail}`; } catch {}
+    throw new Error(msg);
+  }
+  return resp.json();
+}
+
+function fmtClock(unixSec) {
+  if (!unixSec) return '—';
+  return new Date(unixSec * 1000).toLocaleTimeString();
+}
+
+(function () {
+  let pop = null;
+  let openCell = null;
+  let reqId = 0;   // guards against out-of-order async responses
+
+  function closeTS() {
+    if (pop) { pop.remove(); pop = null; }
+    openCell = null;
+  }
+
+  function placeTS(anchor) {
+    if (!pop) return;
+    const rect = anchor.getBoundingClientRect();
+    const popRect = pop.getBoundingClientRect();
+    const margin = 6;
+    let top = rect.bottom + margin;
+    let left = rect.left;
+    if (top + popRect.height > window.innerHeight - 8) top = Math.max(8, rect.top - popRect.height - margin);
+    if (left + popRect.width > window.innerWidth - 8) left = window.innerWidth - popRect.width - 8;
+    if (left < 8) left = 8;
+    pop.style.top = top + 'px';
+    pop.style.left = left + 'px';
+  }
+
+  function renderRows(trades) {
+    if (!trades || !trades.length) return '<div class="msg">No recent trades.</div>';
+    let h = '<table><thead><tr><th>Time</th><th>Price</th><th>Size</th></tr></thead><tbody>';
+    trades.forEach(t => {
+      h += `<tr><td>${fmtClock(t.ts)}</td><td class="px">$${fmt(t.price)}</td><td>${abbr(t.size)}</td></tr>`;
+    });
+    h += '</tbody></table>';
+    return h;
+  }
+
+  async function openTS(cell, contract) {
+    closeTS();
+    const myReq = ++reqId;
+    pop = document.createElement('div');
+    pop.className = 'ts-popover';
+    pop.innerHTML = `<h4>Time &amp; Sales</h4><div class="sub-h">${contract}</div><div class="msg">Loading…</div>`;
+    document.body.appendChild(pop);
+    openCell = cell;
+    placeTS(cell);
+
+    try {
+      const data = await fetchTrades(contract, 10);
+      if (myReq !== reqId || !pop) return;   // a newer click superseded this one
+      pop.innerHTML = `<h4>Time &amp; Sales</h4><div class="sub-h">${contract}</div>` + renderRows(data.trades);
+    } catch (e) {
+      if (myReq !== reqId || !pop) return;
+      pop.innerHTML = `<h4>Time &amp; Sales</h4><div class="sub-h">${contract}</div><div class="msg err">${e.message}</div>`;
+    }
+    placeTS(cell);   // re-clamp now that height is known
+  }
+
+  document.addEventListener('click', (e) => {
+    const cell = e.target.closest('[data-trades-trigger]');
+    if (cell) {
+      if (openCell === cell) { closeTS(); return; }
+      e.stopPropagation();
+      openTS(cell, cell.dataset.contract);
+      return;
+    }
+    if (pop && !e.target.closest('.ts-popover')) closeTS();
+  });
+
+  window.addEventListener('scroll', closeTS, true);
+  window.addEventListener('resize', closeTS);
 })();
 
 // init
