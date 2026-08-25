@@ -556,7 +556,7 @@
     font-size: 11px;
     font-family: 'JetBrains Mono', monospace;
     color: var(--text);
-    min-width: 240px;
+    min-width: 260px;
     max-width: 340px;
     line-height: 1.5;
   }
@@ -582,6 +582,9 @@
     white-space: nowrap;
   }
   .ts-popover th:first-child, .ts-popover td:first-child { text-align: left; }
+  /* Date + Time read as a pair — both left-aligned so no gap opens between
+     them. Price/Size stay right-aligned for numeric scanning. */
+  .ts-popover th:nth-child(2), .ts-popover td:nth-child(2) { text-align: left; }
   .ts-popover th {
     color: var(--muted);
     font-size: 9px;
@@ -902,7 +905,7 @@
   </div>
 
   <div class="footnote">
-    Data: Massive · Real greeks &amp; IV from Massive · Score: 40% yield · 30% delta-fit (target |0.25|) · 20% DTE-fit (21–45d) · 10% liquidity. Hover Score for breakdown.
+    Data: Massive · Real greeks &amp; IV from Massive · Score: 40% yield · 30% delta-fit (target |0.25|) · 20% DTE-fit (21–45d) · 10% liquidity. Tap Score for breakdown.
   </div>
 
 </main>
@@ -1015,7 +1018,7 @@ let state = {
   selectedExpiration: null,
   underlying: null,
   chain: null,
-  fullData: null,        // full Nasdaq response, cached per symbol
+  fullData: null,        // full backend response, cached per symbol
   activeTab: 'puts',
   sort: { key: 'score', dir: 'desc' },
 };
@@ -1038,7 +1041,7 @@ function getBackendBase() {
 
 async function fetchBackend(symbol) {
   const base = getBackendBase();
-  if (!base) throw new Error('No backend URL configured. Paste your Replit/Render URL into the "Backend URL" field above.');
+  if (!base) throw new Error('No backend URL configured. Paste your Render URL into the "Backend URL" field above.');
   const url = `${base}/chain/${encodeURIComponent(symbol.toUpperCase())}/all`;
   const resp = await fetch(url);
   if (!resp.ok) {
@@ -1122,15 +1125,6 @@ async function loadSymbol(symbol, dateTs) {
     renderFilters();
     renderTables();
 
-    // Surface backend warnings about skipped expirations
-    const warns = state.fullData?.warnings || [];
-    if (warns.length > 0) {
-      const expAvail = state.fullData.expirationsAvailable?.length || 0;
-      const expReturned = state.fullData.expirationsReturned || 0;
-      const skipped = warns.length;
-      console.log(`[INFO] Backend returned ${expReturned}/${expAvail} expirations. Skipped:`, warns);
-    }
-
     document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
     setStatus('READY', true);
   } catch (e) {
@@ -1151,7 +1145,7 @@ function showError(symbol, msg) {
     <div class="error-state">
       <strong>Failed to load ${symbol}</strong><br/>
       ${msg}
-      <div class="hint">Make sure your backend URL is set correctly above (e.g. <code>https://your-app.replit.app</code>) and that the Replit service is awake. First request after sleep can take ~30 sec.</div>
+      <div class="hint">Make sure your backend URL is set correctly above (e.g. <code>https://wheel-k4h1.onrender.com</code>) and that the Render service is awake. First request after sleep can take ~30 sec.</div>
     </div>`;
   document.getElementById('putsContainer').innerHTML = html;
   document.getElementById('callsContainer').innerHTML = html;
@@ -1754,9 +1748,21 @@ async function fetchTrades(contract, limit = 10) {
   return resp.json();
 }
 
+// Time & Sales formatting — 24h clock and mm/dd date, built manually so no
+// locale slips an AM/PM or a "24:xx" midnight hour past us. Both render in the
+// browser's local timezone, same as before.
 function fmtClock(unixSec) {
   if (!unixSec) return '—';
-  return new Date(unixSec * 1000).toLocaleTimeString();
+  const d = new Date(unixSec * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function fmtTradeDate(unixSec) {
+  if (!unixSec) return '—';
+  const d = new Date(unixSec * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())}`;
 }
 
 (function () {
@@ -1785,9 +1791,9 @@ function fmtClock(unixSec) {
 
   function renderRows(trades) {
     if (!trades || !trades.length) return '<div class="msg">No recent trades.</div>';
-    let h = '<table><thead><tr><th>Time</th><th>Price</th><th>Size</th></tr></thead><tbody>';
+    let h = '<table><thead><tr><th>Date</th><th>Time</th><th>Price</th><th>Size</th></tr></thead><tbody>';
     trades.forEach(t => {
-      h += `<tr><td>${fmtClock(t.ts)}</td><td class="px">$${fmt(t.price)}</td><td>${abbr(t.size)}</td></tr>`;
+      h += `<tr><td>${fmtTradeDate(t.ts)}</td><td>${fmtClock(t.ts)}</td><td class="px">$${fmt(t.price)}</td><td>${abbr(t.size)}</td></tr>`;
     });
     h += '</tbody></table>';
     return h;

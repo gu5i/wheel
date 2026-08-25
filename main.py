@@ -2,12 +2,18 @@
 Wheel Options Backend — Massive edition
 ================================================
 FastAPI service serving option chain data for the wheel dashboard,
-backed by Massive.com (formerly Polygon.io) Options Starter plan.
+backed by Massive.com (formerly Polygon.io) Options Advanced plan.
 
 Why Massive over yfinance:
   - One API call returns the whole chain WITH greeks + IV (no Black-Scholes needed)
   - Authenticated by API key, not IP -> no shared-IP rate limiting on Render
   - Server-side strike/expiration filtering via query params
+
+Plan entitlement (matters — diagnose data gaps against this FIRST):
+  - Options Advanced  -> live NBBO bid/ask on contracts, greeks, IV, open interest,
+                         and underlying_asset.price (15-min delayed spot)
+  - Stocks Free       -> /v2/aggs/ticker/{sym}/prev only (previous daily close)
+  - NOT entitled      -> live stock snapshot / NBBO endpoints (return NOT_AUTHORIZED)
 
 Setup:
   Set environment variable MASSIVE_API_KEY (or legacy POLYGON_API_KEY) on Render.
@@ -82,32 +88,6 @@ def _get(url: str, params: dict | None = None) -> dict:
     return r.json()
 
 
-def _spot_price(symbol: str) -> float:
-    """Get underlying last price. Try snapshot, fall back to previous close."""
-    try:
-        data = _get(f"{BASE}/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")
-        t = data.get("ticker", {})
-        # last trade price, else day close, else prev day close
-        price = _safe_float(t.get("lastTrade", {}).get("p"))
-        if not price:
-            price = _safe_float(t.get("day", {}).get("c"))
-        if not price:
-            price = _safe_float(t.get("prevDay", {}).get("c"))
-        if price:
-            return price
-    except HTTPException:
-        pass
-    # fallback: previous close endpoint
-    try:
-        data = _get(f"{BASE}/v2/aggs/ticker/{symbol}/prev")
-        results = data.get("results", [])
-        if results:
-            return _safe_float(results[0].get("c"))
-    except HTTPException:
-        pass
-    return 0.0
-
-
 def _prev_agg(symbol: str) -> dict:
     """Previous session's daily bar via /prev (end-of-day, free-tier entitled).
 
@@ -128,9 +108,9 @@ def _options_underlying_price(symbol: str, exp_lo: str, exp_hi: str) -> float:
     """Spot from the OPTIONS ADVANCED plan.
 
     Reads `underlying_asset.price` off a 1-contract options chain snapshot. This
-    price travels with the options entitlement, so it's available (and live) on
-    the options plan without any stock-quote subscription. Returns 0.0 if the
-    options plan doesn't serve it, so the caller can fall back to the stock plan.
+    price travels with the options entitlement, so it's available on the options
+    plan without any stock-quote subscription. Returns 0.0 if the options plan
+    doesn't serve it, so the caller can fall back to the stock plan.
     """
     try:
         data = _get(
@@ -149,11 +129,11 @@ def _options_underlying_price(symbol: str, exp_lo: str, exp_hi: str) -> float:
 def _underlying_quote(symbol: str) -> dict:
     """Underlying quote for an options-plan account (no stock-quote entitlement).
 
-    The live stock snapshot/NBBO endpoints return NOT_AUTHORIZED on an
-    options-only plan, so we don't call them. Price baseline + volume come
-    from the free-tier /prev daily bar. The caller (chain_all) overrides
-    `regularMarketPrice` with the live underlying price from the options
-    chain once it's fetched, and recomputes the change against prevClose.
+    The live stock snapshot/NBBO endpoints return NOT_AUTHORIZED on this plan,
+    so we don't call them. Price baseline + volume come from the free-tier
+    /prev daily bar. The caller (chain_all) overrides `regularMarketPrice` with
+    the underlying price from the options chain once it's fetched, and
+    recomputes the change against prevClose.
     """
     prev = _prev_agg(symbol)
     prev_close = _safe_float(prev.get("c"))
@@ -161,7 +141,7 @@ def _underlying_quote(symbol: str) -> dict:
 
     return {
         "symbol": symbol,
-        "regularMarketPrice": prev_close,   # provisional; overridden with live options price
+        "regularMarketPrice": prev_close,   # provisional; overridden with options-chain spot
         "regularMarketChange": 0.0,
         "regularMarketChangePercent": 0.0,
         "prevClose": prev_close,            # kept so caller can compute true change
@@ -198,15 +178,17 @@ def _map_contract(c: dict, exp_ts: int) -> dict:
     else:
         trade_age_days = None
 
-    # day OHLC — available on Starter tier even without quotes/trades
+    # day OHLC — present even on contracts that haven't printed a trade today
     day_close = _safe_float(day.get("close"))
     day_open = _safe_float(day.get("open"))
     day_high = _safe_float(day.get("high"))
     day_low = _safe_float(day.get("low"))
     day_vwap = _safe_float(day.get("vwap"))
 
-    # Price fallback chain: last trade -> day close -> day vwap
-    # (Starter tier lacks live bid/ask, so day.close is our best real price)
+    # Price fallback chain: last trade -> day close -> day vwap.
+    # On Advanced, live bid/ask is the primary price source and the frontend
+    # prefers the true (bid+ask)/2 mid; this chain only covers contracts with
+    # no two-sided quote.
     fallback_price = last or day_close or day_vwap
 
     itm = False
@@ -274,11 +256,17 @@ def _exp_to_ts(date_str: str) -> int:
 def root():
     return {
         "service": "Wheel Options API (Massive)",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "key_configured": bool(API_KEY),
         "defaults": {"max_days": DEFAULT_MAX_DAYS, "strike_pct": DEFAULT_STRIKE_PCT},
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
-        "endpoints": ["/health", "/quote/{symbol}", "/chain/{symbol}/all"],
+        "endpoints": [
+            "/health",
+            "/quote/{symbol}",
+            "/chain/{symbol}/all",
+            "/trades/{contract}",
+            "/cache/clear",
+        ],
     }
 
 
