@@ -17,7 +17,9 @@ Plan entitlement (matters — diagnose data gaps against this FIRST):
 
 Setup:
   Set environment variable MASSIVE_API_KEY (or legacy POLYGON_API_KEY) on Render.
-  Never hardcode the key.
+  Optionally set FINNHUB_API_KEY (free tier) to enable the next-earnings-date
+  lookup. Without it the chain still serves; earnings report as "unavailable".
+  Never hardcode either key.
 
 Defaults tuned for wheel strategy:
   - Only expirations within next MAX_DAYS days (default 90)
@@ -46,11 +48,20 @@ app.add_middleware(
 API_KEY = os.getenv("MASSIVE_API_KEY") or os.getenv("POLYGON_API_KEY", "")
 BASE = "https://api.massive.com"
 
+# Finnhub — free tier, used ONLY for the next earnings date. Entirely optional:
+# if FINNHUB_API_KEY is unset the chain endpoint still works and simply reports
+# earnings as unavailable. Never let this break the critical path.
+FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
+FINNHUB_BASE = "https://finnhub.io/api/v1"
+EARNINGS_LOOKAHEAD_DAYS = 31    # free tier serves ~1 month of calendar
+EARNINGS_CACHE_TTL = 12 * 3600  # earnings dates don't move intraday
+
 DEFAULT_MAX_DAYS = 90
 DEFAULT_STRIKE_PCT = 50
 CACHE_TTL_SECONDS = 15
 MAX_PAGES = 12          # safety cap on pagination (12 * 250 = 3000 contracts)
 _cache: dict = {}
+_earnings_cache: dict = {}
 
 
 # ---- Helpers ---------------------------------------------------------------
@@ -250,14 +261,94 @@ def _exp_to_ts(date_str: str) -> int:
     return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
 
 
+def _next_earnings(symbol: str) -> dict:
+    """Next scheduled earnings date for `symbol`, via Finnhub's free calendar.
+
+    ALWAYS returns a dict — never raises, never returns None — so a Finnhub
+    outage, a missing key, or a rate limit can't take down /chain. Three
+    distinct states, which the frontend must render differently:
+
+      status="found"          -> a date inside the lookahead window
+      status="none_in_window" -> Finnhub answered, nothing scheduled in the
+                                 next EARNINGS_LOOKAHEAD_DAYS days. This does
+                                 NOT mean "no earnings coming" — the free tier
+                                 only sees ~1 month ahead, so a report 40 days
+                                 out looks identical to no report at all.
+      status="unavailable"    -> no key, request failed, or symbol not covered
+                                 (Finnhub free tier is US-only; foreign issuers
+                                 and very recent listings often come back empty)
+
+    Collapsing "none_in_window" or "unavailable" into "clear" would produce a
+    false all-clear on exactly the names where coverage is weakest. Don't.
+    """
+    base = {
+        "date": None,
+        "ts": 0,
+        "hour": "",
+        "lookaheadDays": EARNINGS_LOOKAHEAD_DAYS,
+        "source": "finnhub",
+        "status": "unavailable",
+    }
+    if not FINNHUB_KEY:
+        return base
+
+    now_ts = time.time()
+    hit = _earnings_cache.get(symbol)
+    if hit and now_ts - hit[0] < EARNINGS_CACHE_TTL:
+        return hit[1]
+
+    today = datetime.now(timezone.utc).date()
+    to_date = today + timedelta(days=EARNINGS_LOOKAHEAD_DAYS)
+    result = dict(base)
+
+    try:
+        r = requests.get(
+            f"{FINNHUB_BASE}/calendar/earnings",
+            params={
+                "from": today.isoformat(),
+                "to": to_date.isoformat(),
+                "symbol": symbol,
+                "token": FINNHUB_KEY,
+            },
+            timeout=10,
+        )
+        if r.ok:
+            rows = (r.json() or {}).get("earningsCalendar") or []
+            # Finnhub returns the window unsorted; take the earliest date that
+            # is today or later.
+            upcoming = sorted(
+                (x for x in rows if x.get("date") and x["date"] >= today.isoformat()),
+                key=lambda x: x["date"],
+            )
+            if upcoming:
+                first = upcoming[0]
+                result.update({
+                    "date": first["date"],
+                    "ts": _exp_to_ts(first["date"]),
+                    "hour": first.get("hour") or "",   # bmo | amc | dmh
+                    "status": "found",
+                })
+            else:
+                result["status"] = "none_in_window"
+        # non-ok (401/403/429) falls through as "unavailable"
+    except (requests.RequestException, ValueError, KeyError):
+        result["status"] = "unavailable"
+
+    # Cache negatives too — a symbol Finnhub doesn't cover won't start being
+    # covered within 12h, and this keeps failures from hammering the API.
+    _earnings_cache[symbol] = (now_ts, result)
+    return result
+
+
 # ---- Endpoints -------------------------------------------------------------
 
 @app.get("/")
 def root():
     return {
         "service": "Wheel Options API (Massive)",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "key_configured": bool(API_KEY),
+        "finnhub_key_configured": bool(FINNHUB_KEY),
         "defaults": {"max_days": DEFAULT_MAX_DAYS, "strike_pct": DEFAULT_STRIKE_PCT},
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
         "endpoints": [
@@ -265,6 +356,7 @@ def root():
             "/quote/{symbol}",
             "/chain/{symbol}/all",
             "/trades/{contract}",
+            "/earnings/{symbol}",
             "/cache/clear",
         ],
     }
@@ -276,8 +368,17 @@ def health():
         "status": "ok",
         "time": datetime.now(timezone.utc).isoformat(),
         "key_configured": bool(API_KEY),
+        "finnhub_key_configured": bool(FINNHUB_KEY),
         "cache_entries": len(_cache),
+        "earnings_cache_entries": len(_earnings_cache),
     }
+
+
+@app.get("/earnings/{symbol}")
+def earnings(symbol: str):
+    """Next earnings date for one symbol. Handy for spot-checking coverage
+    without loading a whole chain."""
+    return _next_earnings(symbol.upper().strip())
 
 
 @app.get("/quote/{symbol}")
@@ -428,6 +529,7 @@ def chain_all(
         "spotSource": spot_source,            # "options_advanced" | "stock_prev_close"
         "underlyingTimeframe": ul_timeframe,  # "REAL-TIME" | "DELAYED" | None
         "underlyingAsOf": ul_asof,            # unix seconds of the spot price (0 if unknown)
+        "nextEarnings": _next_earnings(symbol),  # see _next_earnings for the 3 states
     }
     _cache[cache_key] = (now_ts, response)
     return response
@@ -435,9 +537,10 @@ def chain_all(
 
 @app.get("/cache/clear")
 def cache_clear():
-    n = len(_cache)
+    n, e = len(_cache), len(_earnings_cache)
     _cache.clear()
-    return {"cleared": n}
+    _earnings_cache.clear()
+    return {"cleared": n, "earnings_cleared": e}
 
 
 if __name__ == "__main__":
