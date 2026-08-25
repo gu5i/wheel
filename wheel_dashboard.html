@@ -312,7 +312,6 @@
   }
   .info-block .val.green { color: var(--green); }
   .info-block .val.red { color: var(--red); }
-  .info-block .val.purple { color: var(--purple); }
   .info-block .val.dim { color: var(--muted); }
 
   /* Expiration selector */
@@ -1259,7 +1258,7 @@ function renderEarnings() {
   // status === 'found'
   const days = calendarDte(er.ts);
   el.textContent = `${fmtTradeDate(er.ts)} · ${days}d`;
-  el.className = 'val purple';
+  el.className = 'val';
   el.title = `Next earnings ${er.date}${er.hour ? ' (' + er.hour.toUpperCase() + ')' : ''} — contracts expiring on or after this date are flagged ER.`;
 }
 
