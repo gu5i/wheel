@@ -754,11 +754,23 @@
     transition: all 0.15s;
   }
   .auth-card button:hover { background: #e2ff5a; }
+  /* Collapses when empty so the note sits evenly between the password field
+     and the Enter button. The password input carries 16px bottom margin;
+     -6 + 8 here nets an 18px gap above the note, matching the 18px below it. */
   .auth-error {
     color: var(--red);
     font-size: 11px;
-    margin: -6px 0 14px;
-    min-height: 14px;
+    margin: -6px 0 8px;
+    min-height: 0;
+  }
+  .auth-note {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    text-align: center;
+    text-transform: lowercase;
+    margin: 0 0 18px;
+    line-height: 1.5;
   }
   .auth-lock {
     cursor: pointer;
@@ -780,6 +792,7 @@
     <label for="authPass">Password</label>
     <input type="password" id="authPass" autocomplete="current-password" />
     <div class="auth-error" id="authError"></div>
+    <div class="auth-note">$50/mo subscription — dm for access.</div>
     <button id="authBtn" type="button">Enter</button>
   </div>
 </div>
